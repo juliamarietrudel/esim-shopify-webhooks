@@ -1,55 +1,52 @@
-import "dotenv/config";
 import express from "express";
 import crypto from "crypto";
 
 const app = express();
 
-// ✅ health check
+// Normal routes can use JSON
 app.get("/", (req, res) => res.send("Webhook server running :)"));
-app.get("/ping", (req, res) => res.status(200).send("pong"));
 
-// ✅ Shopify needs RAW body for HMAC verification
-app.use(
-  "/webhooks",
-  express.raw({ type: "application/json" })
-);
+// IMPORTANT: webhook route must use RAW body
+app.post(
+  "/webhooks/order-paid",
+  express.raw({ type: "application/json" }),
+  (req, res) => {
+    try {
+      const hmacHeader = req.get("X-Shopify-Hmac-Sha256");
+      const secret = process.env.SHOPIFY_API_SECRET; // <-- set this on Render
 
-function verifyShopifyHmac(req) {
-  const hmacHeader = req.get("X-Shopify-Hmac-Sha256");
-  const secret = process.env.SHOPIFY_API_SECRET;
+      if (!secret) {
+        console.error("❌ Missing SHOPIFY_API_SECRET env var");
+        return res.status(500).send("Server not configured");
+      }
 
-  if (!secret) throw new Error("Missing SHOPIFY_WEBHOOK_SECRET in env");
+      const rawBody = req.body; // Buffer
+      const computed = crypto
+        .createHmac("sha256", secret)
+        .update(rawBody, "utf8")
+        .digest("base64");
 
-  const generated = crypto
-    .createHmac("sha256", secret)
-    .update(req.body, "utf8")
-    .digest("base64");
+      const safeCompare =
+        Buffer.from(computed, "utf8").length === Buffer.from(hmacHeader || "", "utf8").length &&
+        crypto.timingSafeEqual(Buffer.from(computed, "utf8"), Buffer.from(hmacHeader || "", "utf8"));
 
-  // timing-safe compare
-  const a = Buffer.from(generated, "utf8");
-  const b = Buffer.from(hmacHeader || "", "utf8");
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
+      if (!safeCompare) {
+        console.error("❌ Invalid webhook signature");
+        return res.status(401).send("Invalid webhook signature");
+      }
 
-app.post("/webhooks/order-paid", (req, res) => {
-  try {
-    if (!verifyShopifyHmac(req)) {
-      console.log("❌ Invalid webhook signature");
-      return res.status(401).send("Invalid signature");
+      // Signature OK ✅
+      const payload = JSON.parse(rawBody.toString("utf8"));
+      console.log("🔥 Shopify webhook received (verified)");
+      console.log(JSON.stringify(payload, null, 2));
+
+      return res.status(200).send("OK");
+    } catch (err) {
+      console.error("❌ Webhook handler error:", err);
+      return res.status(500).send("Webhook error");
     }
-
-    console.log("✅ Shopify webhook verified");
-
-    const payload = JSON.parse(req.body.toString("utf8"));
-    console.log("🔥 orders/paid payload:");
-    console.log(JSON.stringify(payload, null, 2));
-
-    return res.status(200).send("OK");
-  } catch (err) {
-    console.error("Webhook error:", err);
-    return res.status(500).send("Server error");
   }
-});
+);
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Listening on ${port}`));
