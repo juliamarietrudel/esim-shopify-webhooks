@@ -16,7 +16,7 @@ app.get("/", (req, res) => res.send("Webhook server running :)"));
 // Helper to compute the Shopify HMAC
 function computeShopifyHmac(rawBodyBuffer) {
   return crypto
-    .createHmac("sha256", process.env.SHOPIFY_API_SECRET)
+    .createHmac("sha256", process.env.API_SECRET_KEY)
     .update(rawBodyBuffer)
     .digest("base64");
 }
