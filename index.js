@@ -1,9 +1,11 @@
+import "dotenv/config";
 import express from "express";
 
 const app = express();
 app.use(express.json());
 
 app.get("/", (req, res) => res.send("Webhook server running :)"));
+app.get("/ping", (req, res) => res.send("pong"));
 
 app.post("/webhooks/order-paid", (req, res) => {
   console.log("🔥 Shopify webhook received");
