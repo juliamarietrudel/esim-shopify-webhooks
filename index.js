@@ -1,7 +1,112 @@
 import express from "express";
 import crypto from "crypto";
+import QRCode from "qrcode";
+import { Resend } from "resend";
 
 const app = express();
+
+// -----------------------------
+// Email (Resend)
+// -----------------------------
+const resendApiKey = (process.env.RESEND_API_KEY || "").trim();
+const emailFrom = (process.env.EMAIL_FROM || "").trim();
+const emailEnabled = Boolean(resendApiKey && emailFrom);
+const resend = emailEnabled ? new Resend(resendApiKey) : null;
+
+if (!emailEnabled) {
+  console.warn(
+    "⚠️ Email not configured. Set RESEND_API_KEY and EMAIL_FROM to send eSIM emails."
+  );
+}
+
+async function generateQrPngBase64(payload) {
+  if (!payload) return null;
+  const pngBuffer = await QRCode.toBuffer(payload, {
+    type: "png",
+    errorCorrectionLevel: "M",
+    margin: 1,
+    scale: 6,
+  });
+  return pngBuffer.toString("base64");
+}
+
+function formatEsimEmailHtml({ firstName, activationCode, manualCode, smdpAddress, apn }) {
+  const safeName = (firstName || "").trim() || "there";
+  const safeApn = apn ? `<li><b>APN</b>: ${apn}</li>` : "";
+
+  return `
+  <div style="font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Arial; line-height: 1.5;">
+    <h2>Your eSIM is ready ✅</h2>
+    <p>Hi ${safeName},</p>
+    <p>To install your eSIM, scan the QR code attached to this email on your eSIM-compatible device.</p>
+
+    <h3>Activation details (backup)</h3>
+    <ul>
+      <li><b>Activation code</b>: <code>${activationCode || ""}</code></li>
+      <li><b>Manual code</b>: <code>${manualCode || ""}</code></li>
+      <li><b>SM-DP+ address</b>: <code>${smdpAddress || ""}</code></li>
+      ${safeApn}
+    </ul>
+
+    <p style="margin-top: 16px;">If you have any issues, reply to this email and we’ll help you.</p>
+  </div>
+  `;
+}
+
+async function sendEsimEmail({ to, firstName, orderId, activationCode, manualCode, smdpAddress, apn }) {
+  if (!emailEnabled) {
+    console.log("ℹ️ Skipping email send (email not configured).");
+    return false;
+  }
+  if (!to) {
+    console.warn("⚠️ No customer email found on order; cannot send eSIM email.");
+    return false;
+  }
+  if (!activationCode) {
+    console.warn("⚠️ Missing activation_code; cannot generate QR email.");
+    return false;
+  }
+
+  const qrBase64 = await generateQrPngBase64(activationCode);
+  if (!qrBase64) {
+    console.warn("⚠️ Failed to generate QR code.");
+    return false;
+  }
+
+  const subject = orderId
+    ? `Your eSIM QR code (Order #${orderId})`
+    : "Your eSIM QR code";
+
+  const html = formatEsimEmailHtml({
+    firstName,
+    activationCode,
+    manualCode,
+    smdpAddress,
+    apn,
+  });
+
+  const result = await resend.emails.send({
+    from: emailFrom,
+    to,
+    subject,
+    html,
+    // Attach the QR as a PNG so it works across more email clients
+    attachments: [
+      {
+        filename: "esim-qr.png",
+        content: qrBase64,
+      },
+    ],
+  });
+
+  if (result?.error) {
+    console.error("❌ Resend error:", result.error);
+    return false;
+  }
+
+  console.log("✅ eSIM email sent via Resend:", { to, id: result?.data?.id });
+  return true;
+}
 
 // TEMP idempotency for testing (resets on restart/deploy)
 const processedOrders = new Set();
@@ -245,7 +350,7 @@ async function createMayaCustomer({ email, firstName, lastName, countryIso2, tag
 
   if (tag) body.tag = tag;
 
-  const resp = await fetch(`${baseUrl}/connectivity/v1/customer/`, {
+  const resp = await safeFetch(`${baseUrl}/connectivity/v1/customer/`, {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -288,7 +393,7 @@ async function createMayaEsim({ planTypeId, customerId, tag = "" }) {
 
   if (tag) body.tag = tag;
 
-  const resp = await fetch(`${baseUrl}/connectivity/v1/esim`, {
+  const resp = await safeFetch(`${baseUrl}/connectivity/v1/esim`, {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -468,6 +573,21 @@ app.post("/webhooks/order-paid", async (req, res) => {
           smdp_address: mayaResp?.esim?.smdp_address,
           apn: mayaResp?.esim?.apn,
         });
+
+        // 3) Email QR code to customer (Resend)
+        try {
+          await sendEsimEmail({
+            to: email,
+            firstName,
+            orderId,
+            activationCode: mayaResp?.esim?.activation_code,
+            manualCode: mayaResp?.esim?.manual_code,
+            smdpAddress: mayaResp?.esim?.smdp_address,
+            apn: mayaResp?.esim?.apn,
+          });
+        } catch (e) {
+          console.error("❌ Failed to send eSIM email:", e?.message || e);
+        }
       } catch (e) {
         console.error("❌ Maya provisioning error:", e.message);
       }
