@@ -47,7 +47,48 @@ function verifyShopifyWebhook(req) {
   }
 }
 
-app.post("/webhooks/order-paid", (req, res) => {
+async function getMayaPlanIdForVariant(variantId) {
+  const shop = process.env.SHOPIFY_SHOP_DOMAIN;      // test-esim-app.myshopify.com
+  const token = process.env.API_ACCESS_TOKEN;        // Admin API access token
+  const version = process.env.SHOPIFY_API_VERSION || "2025-01";
+
+  if (!shop) throw new Error("Missing SHOPIFY_SHOP_DOMAIN env var");
+  if (!token) throw new Error("Missing API_ACCESS_TOKEN env var");
+
+  const gid = `gid://shopify/ProductVariant/${variantId}`;
+
+  const query = `
+    query ($id: ID!) {
+      productVariant(id: $id) {
+        id
+        title
+        metafield(namespace: "custom", key: "maya_plan_id") {
+          value
+        }
+      }
+    }
+  `;
+
+  const resp = await fetch(`https://${shop}/admin/api/${version}/graphql.json`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": token,
+    },
+    body: JSON.stringify({ query, variables: { id: gid } }),
+  });
+
+  const json = await resp.json().catch(() => ({}));
+
+  if (!resp.ok || json.errors) {
+    console.error("❌ Shopify GraphQL error:", json.errors || json);
+    throw new Error(`Shopify GraphQL failed (${resp.status})`);
+  }
+
+  return json?.data?.productVariant?.metafield?.value || null;
+}
+
+app.post("/webhooks/order-paid", async (req, res) => {
   const topic = req.get("X-Shopify-Topic");
   const shop = req.get("X-Shopify-Shop-Domain");
   const receivedHmac = req.get("X-Shopify-Hmac-Sha256");
@@ -70,21 +111,35 @@ app.post("/webhooks/order-paid", (req, res) => {
   const email = req.body?.email || req.body?.contact_email;
 
   console.log("Order ID:", orderId, "Email:", email);
-
-  // ✅ LOG LINE ITEMS (this is what you were trying to do)
+  // ✅ LOG LINE ITEMS + FETCH MAYA PLAN ID (metafield)
   const items = req.body?.line_items || [];
   console.log("🧾 LINE ITEMS:");
-  items.forEach((item, i) => {
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const variantId = String(item.variant_id);
+
+    let mayaPlanId = null;
+    try {
+      mayaPlanId = await getMayaPlanIdForVariant(variantId);
+    } catch (e) {
+      console.error("❌ Failed to fetch metafield for variant:", variantId, e.message);
+    }
+
     console.log(`Item #${i + 1}:`, {
       title: item.title,
       variant_title: item.variant_title,
       product_id: item.product_id,
-      variant_id: item.variant_id,
+      variant_id: variantId,
       quantity: item.quantity,
       sku: item.sku,
+      maya_plan_id: mayaPlanId,
     });
-  });
 
+    if (!mayaPlanId) {
+      console.error("❌ Missing metafield custom.maya_plan_id for variant:", variantId);
+    }
+  }
   // Always respond quickly. We'll do Maya provisioning next.
   return res.status(200).send("OK");
 });
