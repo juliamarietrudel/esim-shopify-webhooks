@@ -37,14 +37,18 @@ function verifyShopifyWebhook(req) {
   }
 
   const computed = crypto
-    .createHmac("sha256", secret)
-    .update(req.rawBody)
-    .digest("base64");
+  .createHmac("sha256", secret)
+  .update(req.rawBody)
+  .digest("base64");
+  
+  console.log("Computed HMAC:", computed);
+  console.log("Received HMAC:", hmacHeader);
 
   try {
+    // Compare base64-decoded bytes (best practice)
     return crypto.timingSafeEqual(
-      Buffer.from(computed, "utf8"),
-      Buffer.from(hmacHeader, "utf8")
+      Buffer.from(computed, "base64"),
+      Buffer.from(hmacHeader, "base64")
     );
   } catch (e) {
     console.error("❌ timingSafeEqual error:", e.message);
