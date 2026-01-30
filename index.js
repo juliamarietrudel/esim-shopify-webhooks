@@ -21,8 +21,7 @@ app.get("/", (_req, res) => res.send("Webhook server running :)"));
 // -----------------------------
 function verifyShopifyWebhook(req) {
   const hmacHeader = req.get("X-Shopify-Hmac-Sha256") || "";
-  const secret = process.env.WEBHOOK_API_KEY; // Shopify app API secret key
-
+  const secret = (process.env.WEBHOOK_API_KEY || "").trim();
   if (!secret) {
     console.error("❌ Missing WEBHOOK_API_KEY env var on server");
     return false;
