@@ -140,6 +140,18 @@ async function createMayaEsim({ planTypeId, tag = "", customerId = "" }) {
   return data;
 }
 
+app.get("/maya-test", async (_req, res) => {
+  try {
+    const resp = await fetch("https://api.maya.net/connectivity/v1/esim/8910300000034360569", {
+      headers: { Accept: "application/json", Authorization: mayaAuthHeader() },
+    });
+    const data = await resp.json().catch(() => ({}));
+    return res.status(resp.status).json({ ok: resp.ok, status: resp.status, data });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // -----------------------------
 // Webhook: orders/paid
 // -----------------------------
