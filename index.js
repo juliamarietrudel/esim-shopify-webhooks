@@ -21,7 +21,8 @@ app.get("/", (_req, res) => res.send("Webhook server running :)"));
 // -----------------------------
 function verifyShopifyWebhook(req) {
   const hmacHeader = req.get("X-Shopify-Hmac-Sha256") || "";
-  const secret = (process.env.WEBHOOK_API_KEY || "").trim();
+  const secret = process.env.WEBHOOK_API_KEY; // Shopify app API secret key
+
   if (!secret) {
     console.error("❌ Missing WEBHOOK_API_KEY env var on server");
     return false;
@@ -36,15 +37,11 @@ function verifyShopifyWebhook(req) {
   }
 
   const computed = crypto
-  .createHmac("sha256", secret)
-  .update(req.rawBody)
-  .digest("base64");
-  
-  console.log("Computed HMAC:", computed);
-  console.log("Received HMAC:", hmacHeader);
+    .createHmac("sha256", secret)
+    .update(req.rawBody)
+    .digest("base64");
 
   try {
-    // Compare base64-decoded bytes (best practice)
     return crypto.timingSafeEqual(
       Buffer.from(computed, "base64"),
       Buffer.from(hmacHeader, "base64")
@@ -109,15 +106,63 @@ function mayaAuthHeader() {
 }
 
 // -----------------------------
-// Maya: Create eSIM + data plan
-// POST https://api.maya.net/connectivity/v1/esim
+// Maya: Create customer
+// POST https://api.maya.net/connectivity/v1/customer/
 // -----------------------------
-async function createMayaEsim({ planTypeId, tag = "", customerId = "" }) {
+async function createMayaCustomer({ email, firstName, lastName, countryIso2, tag = "" }) {
   const baseUrl = process.env.MAYA_BASE_URL || "https://api.maya.net";
 
-  const body = { plan_type_id: planTypeId };
+  const body = {
+    email,
+    first_name: firstName || "",
+    last_name: lastName || "",
+    country: countryIso2 || "US",
+  };
+
   if (tag) body.tag = tag;
-  if (customerId) body.customer_id = customerId;
+
+  const resp = await fetch(`${baseUrl}/connectivity/v1/customer/`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: mayaAuthHeader(),
+    },
+    body: JSON.stringify(body),
+  });
+
+  const data = await resp.json().catch(() => ({}));
+
+  if (!resp.ok) {
+    console.error("❌ Maya create customer failed:", resp.status, data);
+    throw new Error(`Maya create customer failed (${resp.status})`);
+  }
+
+  // Depending on the API, the created customer may be in data.customer or similar.
+  // We'll try both safe paths:
+  const customerId = data?.customer?.id || data?.customer?.uid || data?.id || null;
+
+  if (!customerId) {
+    console.error("❌ Could not find customer id in Maya response:", data);
+    throw new Error("Maya customer created but no customer id returned");
+  }
+
+  return { raw: data, customerId };
+}
+
+// -----------------------------
+// Maya: Create eSIM + data plan attached to customer
+// POST https://api.maya.net/connectivity/v1/esim
+// -----------------------------
+async function createMayaEsim({ planTypeId, customerId, tag = "" }) {
+  const baseUrl = process.env.MAYA_BASE_URL || "https://api.maya.net";
+
+  const body = {
+    plan_type_id: planTypeId,
+    customer_id: customerId,
+  };
+
+  if (tag) body.tag = tag;
 
   const resp = await fetch(`${baseUrl}/connectivity/v1/esim`, {
     method: "POST",
@@ -139,45 +184,55 @@ async function createMayaEsim({ planTypeId, tag = "", customerId = "" }) {
   return data;
 }
 
-app.get("/maya-test", async (_req, res) => {
-  try {
-    const resp = await fetch("https://api.maya.net/connectivity/v1/esim/8910300000034360569", {
-      headers: { Accept: "application/json", Authorization: mayaAuthHeader() },
-    });
-    const data = await resp.json().catch(() => ({}));
-    return res.status(resp.status).json({ ok: resp.ok, status: resp.status, data });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: e.message });
-  }
-});
+// -----------------------------
+// Helpers: get buyer info from order
+// -----------------------------
+function pickBuyerFromOrder(order) {
+  const email = order?.email || order?.contact_email || "";
+
+  const firstName =
+    order?.customer?.first_name ||
+    order?.billing_address?.first_name ||
+    order?.shipping_address?.first_name ||
+    "";
+
+  const lastName =
+    order?.customer?.last_name ||
+    order?.billing_address?.last_name ||
+    order?.shipping_address?.last_name ||
+    "";
+
+  // Shopify gives country_code as ISO2 (CA/US/etc.) in addresses
+  const countryIso2 =
+    order?.billing_address?.country_code ||
+    order?.shipping_address?.country_code ||
+    "US";
+
+  return { email, firstName, lastName, countryIso2 };
+}
 
 // -----------------------------
 // Webhook: orders/paid
 // -----------------------------
 app.post("/webhooks/order-paid", async (req, res) => {
-  const topic = req.get("X-Shopify-Topic");
-  const shop = req.get("X-Shopify-Shop-Domain");
-  const receivedHmac = req.get("X-Shopify-Hmac-Sha256");
-
   const ok = verifyShopifyWebhook(req);
-  console.log("Using webhook secret length:", (process.env.WEBHOOK_API_KEY || "").length);
-
 
   console.log("---- WEBHOOK DEBUG START ----");
-  console.log("Topic:", topic);
-  console.log("Shop:", shop);
+  console.log("Topic:", req.get("X-Shopify-Topic"));
+  console.log("Shop:", req.get("X-Shopify-Shop-Domain"));
   console.log("Content-Type:", req.get("content-type"));
   console.log("Raw body length:", req.rawBody?.length);
-  console.log("Received HMAC:", receivedHmac);
   console.log("HMAC MATCH:", ok);
   console.log("---- WEBHOOK DEBUG END ----");
 
   if (!ok) return res.status(401).send("Invalid signature");
 
-  const orderId = req.body?.id;
-  const email = req.body?.email || req.body?.contact_email;
+  const order = req.body || {};
+  const orderId = order?.id;
+  const { email, firstName, lastName, countryIso2 } = pickBuyerFromOrder(order);
 
-  console.log("Order ID:", orderId, "Email:", email);
+  console.log("Order ID:", orderId);
+  console.log("Buyer:", { email, firstName, lastName, countryIso2 });
 
   // TEMP idempotency: avoid double provisioning if Shopify retries
   if (orderId && processedOrders.has(orderId)) {
@@ -186,12 +241,32 @@ app.post("/webhooks/order-paid", async (req, res) => {
   }
   if (orderId) processedOrders.add(orderId);
 
-  const items = req.body?.line_items || [];
-  console.log("🧾 LINE ITEMS:");
+  // 1) Create Maya customer (always, for now)
+  let mayaCustomerId = null;
+  try {
+    const created = await createMayaCustomer({
+      email,
+      firstName,
+      lastName,
+      countryIso2,
+      tag: String(orderId || ""),
+    });
+    mayaCustomerId = created.customerId;
+    console.log("✅ Maya customer created:", mayaCustomerId);
+  } catch (e) {
+    console.error("❌ Maya customer creation failed:", e.message);
+    // If customer creation fails, we cannot attach eSIMs → stop here
+    return res.status(200).send("OK");
+  }
+
+  // 2) Create eSIM(s) attached to that customer
+  const items = order?.line_items || [];
+  console.log("🧾 LINE ITEMS:", items.length);
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const variantId = String(item.variant_id);
+    const qty = Number(item.quantity || 1);
 
     let mayaPlanId = null;
     try {
@@ -203,38 +278,33 @@ app.post("/webhooks/order-paid", async (req, res) => {
     console.log(`Item #${i + 1}:`, {
       title: item.title,
       variant_title: item.variant_title,
-      product_id: item.product_id,
       variant_id: variantId,
-      quantity: item.quantity,
-      sku: item.sku,
+      quantity: qty,
       maya_plan_id: mayaPlanId,
     });
 
     if (!mayaPlanId) {
       console.error("❌ Missing metafield custom.maya_plan_id for variant:", variantId);
-      continue; // can't provision without plan id
+      continue;
     }
 
-    const qty = Number(item.quantity || 1);
-
-    // Provision one eSIM per quantity
     for (let q = 0; q < qty; q++) {
       try {
         const mayaResp = await createMayaEsim({
           planTypeId: mayaPlanId,
-          tag: String(orderId || ""), // optional traceability
+          customerId: mayaCustomerId,
+          tag: String(orderId || ""), // traceability
         });
 
-        console.log("✅ Maya eSIM created:", {
+        console.log("✅ Maya eSIM created (attached to customer):", {
+          maya_customer_id: mayaCustomerId,
           maya_esim_uid: mayaResp?.esim?.uid,
           iccid: mayaResp?.esim?.iccid,
-          activation_code: mayaResp?.esim?.activation_code, // often starts with LPA:1$
+          activation_code: mayaResp?.esim?.activation_code,
           manual_code: mayaResp?.esim?.manual_code,
           smdp_address: mayaResp?.esim?.smdp_address,
           apn: mayaResp?.esim?.apn,
         });
-
-        // TODO next: email activation_code / QR to `email`
       } catch (e) {
         console.error("❌ Maya provisioning error:", e.message);
       }
@@ -243,7 +313,6 @@ app.post("/webhooks/order-paid", async (req, res) => {
 
   return res.status(200).send("OK");
 });
-
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Listening on ${port}`));
