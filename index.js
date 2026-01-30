@@ -289,6 +289,9 @@ app.post("/webhooks/order-paid", async (req, res) => {
 
   console.log("Order ID:", orderId);
   console.log("Buyer:", { email, firstName, lastName, countryIso2 });
+  console.log("order.customer_id:", order?.customer_id);
+  console.log("order.customer?.id:", order?.customer?.id);
+  console.log("order.customer:", order?.customer);
 
   // TEMP idempotency: avoid double provisioning if Shopify retries
   if (orderId && processedOrders.has(orderId)) {
