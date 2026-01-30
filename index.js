@@ -17,6 +17,38 @@ app.use(
 app.get("/", (_req, res) => res.send("Webhook server running :)"));
 
 // -----------------------------
+// HTTP helpers (better errors + timeout)
+// -----------------------------
+async function safeFetch(url, options = {}) {
+  const ctrl = new AbortController();
+  const timeoutMs = Number(process.env.FETCH_TIMEOUT_MS || 15000);
+  const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { ...options, signal: ctrl.signal });
+  } catch (e) {
+    // Node fetch often throws "fetch failed"; log the underlying cause if present
+    console.error("❌ FETCH ERROR:", e?.message, "cause:", e?.cause);
+    throw e;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function shopifyGraphqlUrl() {
+  const shopRaw = process.env.SHOPIFY_SHOP_DOMAIN;
+  const versionRaw = process.env.SHOPIFY_API_VERSION || "2025-01";
+
+  const shop = (shopRaw || "").trim();
+  const version = (versionRaw || "").trim();
+
+  if (!shop) throw new Error("Missing SHOPIFY_SHOP_DOMAIN env var");
+  if (!version) throw new Error("Missing SHOPIFY_API_VERSION env var");
+
+  return `https://${shop}/admin/api/${version}/graphql.json`;
+}
+
+// -----------------------------
 // Shopify signature verification
 // -----------------------------
 function verifyShopifyWebhook(req) {
@@ -56,11 +88,9 @@ function verifyShopifyWebhook(req) {
 // Shopify Admin API: read variant metafield
 // --------------------------------------
 async function getMayaPlanIdForVariant(variantId) {
-  const shop = process.env.SHOPIFY_SHOP_DOMAIN; // test-esim-app.myshopify.com
-  const token = process.env.API_ACCESS_TOKEN;   // Admin API access token
-  const version = process.env.SHOPIFY_API_VERSION || "2025-01";
+  const token = process.env.API_ACCESS_TOKEN; // Admin API access token
+  const url = shopifyGraphqlUrl();
 
-  if (!shop) throw new Error("Missing SHOPIFY_SHOP_DOMAIN env var");
   if (!token) throw new Error("Missing API_ACCESS_TOKEN env var");
 
   const gid = `gid://shopify/ProductVariant/${variantId}`;
@@ -77,7 +107,7 @@ async function getMayaPlanIdForVariant(variantId) {
     }
   `;
 
-  const resp = await fetch(`https://${shop}/admin/api/${version}/graphql.json`, {
+  const resp = await safeFetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -106,11 +136,9 @@ function mayaAuthHeader() {
 }
 
 async function saveMayaCustomerIdToShopifyCustomer(shopifyCustomerId, mayaCustomerId) {
-  const shop = process.env.SHOPIFY_SHOP_DOMAIN;
   const token = process.env.API_ACCESS_TOKEN;
-  const version = process.env.SHOPIFY_API_VERSION || "2025-01";
+  const url = shopifyGraphqlUrl();
 
-  if (!shop) throw new Error("Missing SHOPIFY_SHOP_DOMAIN env var");
   if (!token) throw new Error("Missing API_ACCESS_TOKEN env var");
 
   const gid = `gid://shopify/Customer/${shopifyCustomerId}`;
@@ -136,7 +164,7 @@ async function saveMayaCustomerIdToShopifyCustomer(shopifyCustomerId, mayaCustom
     ],
   };
 
-  const resp = await fetch(`https://${shop}/admin/api/${version}/graphql.json`, {
+  const resp = await safeFetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -162,11 +190,11 @@ async function saveMayaCustomerIdToShopifyCustomer(shopifyCustomerId, mayaCustom
 }
 
 async function getMayaCustomerIdFromShopifyCustomer(shopifyCustomerId) {
-  const shop = process.env.SHOPIFY_SHOP_DOMAIN;
   const token = process.env.API_ACCESS_TOKEN;
-  const version = process.env.SHOPIFY_API_VERSION || "2025-01";
+  const url = shopifyGraphqlUrl();
 
-  if (!shop) throw new Error("Missing SHOPIFY_SHOP_DOMAIN env var");
+  console.log("🔎 GraphQL URL:", url);
+
   if (!token) throw new Error("Missing API_ACCESS_TOKEN env var");
 
   const gid = `gid://shopify/Customer/${shopifyCustomerId}`;
@@ -182,7 +210,7 @@ async function getMayaCustomerIdFromShopifyCustomer(shopifyCustomerId) {
     }
   `;
 
-  const resp = await fetch(`https://${shop}/admin/api/${version}/graphql.json`, {
+  const resp = await safeFetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
