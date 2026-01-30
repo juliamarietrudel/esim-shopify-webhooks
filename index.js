@@ -105,6 +105,62 @@ function mayaAuthHeader() {
   return `Basic ${auth}`;
 }
 
+async function saveMayaCustomerIdToShopifyCustomer(shopifyCustomerId, mayaCustomerId) {
+  const shop = process.env.SHOPIFY_SHOP_DOMAIN;
+  const token = process.env.API_ACCESS_TOKEN;
+  const version = process.env.SHOPIFY_API_VERSION || "2025-01";
+
+  if (!shop) throw new Error("Missing SHOPIFY_SHOP_DOMAIN env var");
+  if (!token) throw new Error("Missing API_ACCESS_TOKEN env var");
+
+  const gid = `gid://shopify/Customer/${shopifyCustomerId}`;
+
+  const mutation = `
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        metafields { id key value }
+        userErrors { field message }
+      }
+    }
+  `;
+
+  const variables = {
+    metafields: [
+      {
+        ownerId: gid,
+        namespace: "custom",
+        key: "maya_customer_id",
+        type: "single_line_text_field",
+        value: String(mayaCustomerId),
+      },
+    ],
+  };
+
+  const resp = await fetch(`https://${shop}/admin/api/${version}/graphql.json`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": token,
+    },
+    body: JSON.stringify({ query: mutation, variables }),
+  });
+
+  const json = await resp.json().catch(() => ({}));
+
+  const userErrors = json?.data?.metafieldsSet?.userErrors || [];
+  if (!resp.ok || json.errors || userErrors.length) {
+    console.error("❌ Shopify metafield write error:", {
+      status: resp.status,
+      errors: json.errors,
+      userErrors,
+      response: json,
+    });
+    throw new Error(userErrors[0]?.message || "Failed to write Shopify customer metafield");
+  }
+
+  return true;
+}
+
 // -----------------------------
 // Maya: Create customer
 // POST https://api.maya.net/connectivity/v1/customer/
@@ -253,6 +309,23 @@ app.post("/webhooks/order-paid", async (req, res) => {
     });
     mayaCustomerId = created.customerId;
     console.log("✅ Maya customer created:", mayaCustomerId);
+        // 1b) Save Maya customer id into Shopify Customer metafield (if Shopify customer exists)
+    const shopifyCustomerId = order?.customer_id || order?.customer?.id || null;
+    console.log("Shopify customer id on order:", shopifyCustomerId);
+
+    if (shopifyCustomerId) {
+      try {
+        await saveMayaCustomerIdToShopifyCustomer(shopifyCustomerId, mayaCustomerId);
+        console.log("✅ Saved Maya customer id to Shopify customer metafield:", {
+          shopifyCustomerId,
+          mayaCustomerId,
+        });
+      } catch (e) {
+        console.error("❌ Failed saving Maya customer id to Shopify:", e.message);
+      }
+    } else {
+      console.warn("⚠️ No Shopify customer object on this order, cannot save metafield yet.");
+    }
   } catch (e) {
     console.error("❌ Maya customer creation failed:", e.message);
     // If customer creation fails, we cannot attach eSIMs → stop here
