@@ -3,11 +3,6 @@ import crypto from "crypto";
 
 const app = express();
 
-/**
- * ✅ IMPORTANT:
- * We MUST capture the raw request bytes BEFORE JSON parsing changes anything.
- * Shopify computes HMAC from the raw bytes, so we do the same.
- */
 app.use(
   express.json({
     verify: (req, _res, buf) => {
@@ -18,6 +13,7 @@ app.use(
 
 app.get("/", (_req, res) => res.send("Webhook server running :)"));
 
+// Shopify signature verification
 function verifyShopifyWebhook(req) {
   const hmacHeader = req.get("X-Shopify-Hmac-Sha256") || "";
   const secret = process.env.WEBHOOK_API_KEY; // <-- MUST be Shopify "API secret key"
@@ -51,6 +47,20 @@ function verifyShopifyWebhook(req) {
     return false;
   }
 }
+
+const items = req.body?.line_items || [];
+
+console.log("🧾 LINE ITEMS:");
+items.forEach((item, i) => {
+  console.log(`Item #${i + 1}:`, {
+    title: item.title,
+    variant_title: item.variant_title,
+    product_id: item.product_id,
+    variant_id: item.variant_id,
+    quantity: item.quantity,
+    sku: item.sku,
+  });
+});
 
 app.post("/webhooks/order-paid", (req, res) => {
   // Always respond quickly. Shopify retries on timeouts.
