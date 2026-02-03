@@ -153,6 +153,73 @@ function shopifyGraphqlUrl() {
   return `https://${shop}/admin/api/${version}/graphql.json`;
 }
 
+async function getMayaCustomerDetails(mayaCustomerId) {
+  const baseUrl = process.env.MAYA_BASE_URL || "https://api.maya.net";
+
+  const resp = await safeFetch(`${baseUrl}/connectivity/v1/customer/${mayaCustomerId}`, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: mayaAuthHeader(),
+    },
+  });
+
+  const data = await resp.json().catch(() => ({}));
+
+  if (!resp.ok) {
+    console.error("❌ Maya get customer failed:", resp.status, data);
+    throw new Error(`Maya get customer failed (${resp.status})`);
+  }
+
+  return data; // contient customer.esims[].plans[]
+}
+
+async function createMayaTopUp({ iccid, planTypeId, tag = "" }) {
+  const baseUrl = process.env.MAYA_BASE_URL || "https://api.maya.net";
+
+  const resp = await safeFetch(`${baseUrl}/connectivity/v1/esim/${iccid}/plan/${planTypeId}`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: mayaAuthHeader(),
+    },
+    body: JSON.stringify(tag ? { tag } : {}), // certaines APIs acceptent tag, sinon c’est OK vide
+  });
+
+  const data = await resp.json().catch(() => ({}));
+
+  if (!resp.ok) {
+    console.error("❌ Maya top-up failed:", resp.status, data);
+    throw new Error(`Maya top-up failed (${resp.status})`);
+  }
+
+  return data;
+}
+
+
+async function sendAdminAlertEmail({ subject, html }) {
+  const to = (process.env.ALERT_EMAIL_TO || "").trim();
+  if (!emailEnabled || !to) {
+    console.warn("⚠️ Alert email not sent (missing RESEND config or ALERT_EMAIL_TO).");
+    return false;
+  }
+
+  const result = await resend.emails.send({
+    from: emailFrom,
+    to,
+    subject,
+    html,
+  });
+
+  if (result?.error) {
+    console.error("❌ Resend alert error:", result.error);
+    return false;
+  }
+  return true;
+}
+
+
 // -----------------------------
 // Shopify signature verification
 // -----------------------------
@@ -232,6 +299,13 @@ async function getVariantConfig(variantId) {
   const productType = (v?.productType?.value || "").trim().toLowerCase() || null;
 
   return { mayaPlanId, productType };
+}
+
+// Backwards-compat helper (older code paths may still call this)
+// Returns the Maya plan_type_id stored on the variant.
+async function getMayaPlanIdForVariant(variantId) {
+  const cfg = await getVariantConfig(variantId);
+  return cfg?.mayaPlanId || null;
 }
 
 // -----------------------------
@@ -540,8 +614,11 @@ app.post("/webhooks/order-paid", async (req, res) => {
     const qty = Number(item.quantity || 1);
 
     let mayaPlanId = null;
+    let productType = null;
     try {
-      mayaPlanId = await getMayaPlanIdForVariant(variantId);
+      const cfg = await getVariantConfig(variantId);
+      mayaPlanId = cfg?.mayaPlanId || null;
+      productType = cfg?.productType || null;
     } catch (e) {
       console.error("❌ Failed to fetch metafield for variant:", variantId, e.message);
     }
@@ -556,6 +633,188 @@ app.post("/webhooks/order-paid", async (req, res) => {
 
     if (!mayaPlanId) {
       console.error("❌ Missing metafield custom.maya_plan_id for variant:", variantId);
+      continue;
+    }
+
+    // -----------------------------
+    // RECHARGE (TOP UP)
+    // -----------------------------
+    if (productType === "recharge") {
+      // Must already have a Maya customer id to find existing eSIMs
+      if (!mayaCustomerId) {
+        await sendAdminAlertEmail({
+          subject: `⚠️ Top-up received but no Maya customer id (Order #${orderId || ""})`,
+          html: `
+            <p>Order contains a <b>top-up</b>, but we could not resolve a Maya customer id.</p>
+            <ul>
+              <li><b>Order ID</b>: ${orderId || ""}</li>
+              <li><b>Email</b>: ${email || ""}</li>
+              <li><b>Variant ID</b>: ${variantId}</li>
+              <li><b>Maya plan_type_id</b>: ${mayaPlanId}</li>
+            </ul>
+            <p>No action was taken. Please contact the customer.</p>
+          `,
+        });
+        continue;
+      }
+
+      let mayaDetails = null;
+      try {
+        mayaDetails = await getMayaCustomerDetails(mayaCustomerId);
+      } catch (e) {
+        await sendAdminAlertEmail({
+          subject: `⚠️ Top-up failed: could not fetch Maya customer (Order #${orderId || ""})`,
+          html: `
+            <p>Order contains a <b>top-up</b>, but fetching the Maya customer failed.</p>
+            <ul>
+              <li><b>Order ID</b>: ${orderId || ""}</li>
+              <li><b>Email</b>: ${email || ""}</li>
+              <li><b>Maya customer id</b>: ${mayaCustomerId}</li>
+              <li><b>Variant ID</b>: ${variantId}</li>
+              <li><b>Maya plan_type_id</b>: ${mayaPlanId}</li>
+              <li><b>Error</b>: ${(e && e.message) || e}</li>
+            </ul>
+            <p>No action was taken.</p>
+          `,
+        });
+        continue;
+      }
+
+      const customer = mayaDetails?.customer;
+      const esims = Array.isArray(customer?.esims) ? customer.esims : [];
+
+      // Your rule: only consider ACTIVE eSIMs
+      const activeEsims = esims.filter((e) => String(e?.service_status || "").toLowerCase() === "active");
+
+      // Choose the eSIM whose matching plan (same plan_type.id) has the LOWEST remaining bytes.
+      // Secondary tiebreaks: prefer a plan that has been activated; then earliest start_time.
+      function isActivated_(plan) {
+        const da = String(plan?.date_activated || "");
+        return da && da !== "0000-00-00 00:00:00";
+      }
+
+      function toInt_(v) {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : NaN;
+      }
+
+      function timeValue_(s) {
+        const t = Date.parse(String(s || ""));
+        return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
+      }
+
+      let best = null; // { iccid, esimUid, planId, bytesRemaining, activated, startTime }
+
+      for (const e of activeEsims) {
+        const plans = Array.isArray(e?.plans) ? e.plans : [];
+        for (const p of plans) {
+          const planTypeId = p?.plan_type?.id;
+          if (!planTypeId) continue;
+          if (String(planTypeId) !== String(mayaPlanId)) continue;
+
+          const bytesRemaining = toInt_(p?.data_bytes_remaining);
+          const activated = isActivated_(p);
+          const startTime = p?.start_time;
+
+          const candidate = {
+            iccid: e?.iccid,
+            esimUid: e?.uid,
+            planId: p?.id,
+            bytesRemaining: Number.isFinite(bytesRemaining) ? bytesRemaining : Number.POSITIVE_INFINITY,
+            activated,
+            startTime,
+          };
+
+          if (!best) {
+            best = candidate;
+            continue;
+          }
+
+          // 1) lowest remaining bytes wins
+          if (candidate.bytesRemaining < best.bytesRemaining) {
+            best = candidate;
+            continue;
+          }
+          if (candidate.bytesRemaining > best.bytesRemaining) continue;
+
+          // 2) prefer activated plan
+          if (candidate.activated && !best.activated) {
+            best = candidate;
+            continue;
+          }
+          if (!candidate.activated && best.activated) continue;
+
+          // 3) earliest start_time
+          if (timeValue_(candidate.startTime) < timeValue_(best.startTime)) {
+            best = candidate;
+            continue;
+          }
+        }
+      }
+
+      if (!best?.iccid) {
+        await sendAdminAlertEmail({
+          subject: `⚠️ Top-up received but no matching ACTIVE eSIM found (Order #${orderId || ""})`,
+          html: `
+            <p>Order contains a <b>top-up</b>, but we couldn't find an ACTIVE eSIM with an existing plan matching this plan_type_id.</p>
+            <ul>
+              <li><b>Order ID</b>: ${orderId || ""}</li>
+              <li><b>Email</b>: ${email || ""}</li>
+              <li><b>Maya customer id</b>: ${mayaCustomerId}</li>
+              <li><b>Variant ID</b>: ${variantId}</li>
+              <li><b>Maya plan_type_id</b>: ${mayaPlanId}</li>
+            </ul>
+            <p>No action was taken. Please contact the customer.</p>
+          `,
+        });
+        continue;
+      }
+
+      console.log("🔁 Top-up target chosen:", {
+        iccid: best.iccid,
+        esim_uid: best.esimUid,
+        matched_plan_id: best.planId,
+        bytes_remaining: best.bytesRemaining,
+        activated: best.activated,
+        start_time: best.startTime,
+        plan_type_id: mayaPlanId,
+      });
+
+      // Apply the top-up qty times (creates NEW plans on the same eSIM)
+      for (let q = 0; q < qty; q++) {
+        try {
+          const topupResp = await createMayaTopUp({
+            iccid: best.iccid,
+            planTypeId: mayaPlanId,
+            tag: String(orderId || ""),
+          });
+
+          console.log("✅ Maya top-up created:", {
+            iccid: best.iccid,
+            plan_type_id: mayaPlanId,
+            new_plan_id: topupResp?.plan?.id,
+            request_id: topupResp?.request_id,
+          });
+        } catch (e) {
+          console.error("❌ Maya top-up error:", e.message);
+          await sendAdminAlertEmail({
+            subject: `❌ Top-up failed in Maya (Order #${orderId || ""})`,
+            html: `
+              <p>Creating a Maya top-up failed.</p>
+              <ul>
+                <li><b>Order ID</b>: ${orderId || ""}</li>
+                <li><b>Email</b>: ${email || ""}</li>
+                <li><b>Maya customer id</b>: ${mayaCustomerId}</li>
+                <li><b>ICCID</b>: ${best.iccid}</li>
+                <li><b>plan_type_id</b>: ${mayaPlanId}</li>
+                <li><b>Error</b>: ${(e && e.message) || e}</li>
+              </ul>
+            `,
+          });
+        }
+      }
+
+      // Done with this line item (do NOT create a new eSIM)
       continue;
     }
 
