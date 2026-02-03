@@ -192,9 +192,10 @@ function verifyShopifyWebhook(req) {
 // --------------------------------------
 // Shopify Admin API: read variant metafield
 // --------------------------------------
-async function getVariantConfig(variantId) {
-  const token = process.env.API_ACCESS_TOKEN;
+async function getMayaPlanIdForVariant(variantId) {
+  const token = process.env.API_ACCESS_TOKEN; // Admin API access token
   const url = shopifyGraphqlUrl();
+
   if (!token) throw new Error("Missing API_ACCESS_TOKEN env var");
 
   const gid = `gid://shopify/ProductVariant/${variantId}`;
@@ -204,9 +205,9 @@ async function getVariantConfig(variantId) {
       productVariant(id: $id) {
         id
         title
-
-        mayaPlanId: metafield(namespace: "custom", key: "maya_plan_id") { value }
-        productType: metafield(namespace: "custom", key: "type_de_produit") { value }
+        metafield(namespace: "custom", key: "maya_plan_id") {
+          value
+        }
       }
     }
   `;
@@ -227,11 +228,7 @@ async function getVariantConfig(variantId) {
     throw new Error(`Shopify GraphQL failed (${resp.status})`);
   }
 
-  const v = json?.data?.productVariant;
-  const mayaPlanId = (v?.mayaPlanId?.value || "").trim() || null;
-  const productType = (v?.productType?.value || "").trim().toLowerCase() || null;
-
-  return { mayaPlanId, productType };
+  return json?.data?.productVariant?.metafield?.value || null; // e.g. 5VKDTK3BFFZE
 }
 
 // -----------------------------

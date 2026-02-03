@@ -26,6 +26,11 @@ curl --request GET \
   --header 'Accept: application/json' \
   --header 'Authorization: Basic YjY4RWdDQjJLOVc5OmdscVBYcWVWcFk2bUVZTWZvMXJhSHlBR2JsdHhoT1N5TjdmdFJpNXc2UUxBRE1oc2NrM25IWFdydUpCdldLODM='
 
+<!-- get plan details -->
+curl --request GET \
+  --url 'https://api.maya.net/connectivity/v1/esim/8910300000049989978/plan/JRNAUHLZIPTH' \
+  --header 'Accept: application/json' \
+  --header 'Authorization: Basic YjY4RWdDQjJLOVc5OmdscVBYcWVWcFk2bUVZTWZvMXJhSHlBR2JsdHhoT1N5TjdmdFJpNXc2UUxBRE1oc2NrM25IWFdydUpCdldLODM='
 
 
 <!-- STEPS -->
