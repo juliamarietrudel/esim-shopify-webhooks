@@ -629,6 +629,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
       variant_id: variantId,
       quantity: qty,
       maya_plan_id: mayaPlanId,
+      product_type: productType
     });
 
     if (!mayaPlanId) {
@@ -639,7 +640,9 @@ app.post("/webhooks/order-paid", async (req, res) => {
     // -----------------------------
     // RECHARGE (TOP UP)
     // -----------------------------
+    console.log("🧩 Variant config:", { variantId, productType, mayaPlanId });
     if (productType === "recharge") {
+      console.log("🔄 Entering TOP-UP flow", { orderId, variantId, qty, mayaPlanId, mayaCustomerId });
       // Must already have a Maya customer id to find existing eSIMs
       if (!mayaCustomerId) {
         await sendAdminAlertEmail({
@@ -682,6 +685,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
 
       const customer = mayaDetails?.customer;
       const esims = Array.isArray(customer?.esims) ? customer.esims : [];
+      console.log("👤 Maya customer loaded", { mayaCustomerId, esims_count: esims.length });
 
       // Allow top-ups even if the eSIM/card is currently inactive.
       // We only exclude eSIMs that look clearly unusable (e.g. terminated/cancelled).
@@ -694,6 +698,10 @@ app.post("/webhooks/order-paid", async (req, res) => {
         if (service.includes("terminated") || service.includes("cancel")) return false;
 
         return true; // include active + inactive
+      });
+      console.log("📡 Candidate eSIMs for top-up", {
+        total_esims: esims.length,
+        candidate_esims: candidateEsims.length,
       });
 
       // Choose the eSIM whose matching plan (same plan_type.id) has the LOWEST remaining bytes.
@@ -762,7 +770,13 @@ app.post("/webhooks/order-paid", async (req, res) => {
         }
       }
 
+      console.log("🔎 Matching plan search finished", {
+        mayaPlanId,
+        best_found: Boolean(best?.iccid),
+        best_iccid: best?.iccid || null,
+      });
       if (!best?.iccid) {
+        console.warn("⚠️ No matching eSIM/plan found for top-up", { mayaCustomerId, mayaPlanId });
         await sendAdminAlertEmail({
           subject: `⚠️ Top-up received but no matching eSIM found (Order #${orderId || ""})`,
           html: `
@@ -792,6 +806,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
 
       // Apply the top-up qty times (creates NEW plans on the same eSIM)
       for (let q = 0; q < qty; q++) {
+        console.log("📨 Calling Maya createTopUp", { iccid: best.iccid, planTypeId: mayaPlanId });
         try {
           const topupResp = await createMayaTopUp({
             iccid: best.iccid,
