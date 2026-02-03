@@ -15,20 +15,20 @@ curl --request GET \
 
 <!-- get customer info (for customer with id: ZMPSHYKZEEUF) -->
 curl --request GET \
-  --url 'https://api.maya.net/connectivity/v1/customer/D8G574ILZJ2Z' \
+  --url 'https://api.maya.net/connectivity/v1/customer/9VFM72RCHXF3' \
   --header 'Accept: application/json' \
   --header 'Authorization: Basic YjY4RWdDQjJLOVc5OmdscVBYcWVWcFk2bUVZTWZvMXJhSHlBR2JsdHhoT1N5TjdmdFJpNXc2UUxBRE1oc2NrM25IWFdydUpCdldLODM='
 
 
 <!-- get esim information (for esim with id: 891030000003436056) -->
 curl --request GET \
-  --url 'https://api.maya.net/connectivity/v1/esim/8910300000053267986' \
+  --url 'https://api.maya.net/connectivity/v1/esim/8910300000049992500' \
   --header 'Accept: application/json' \
   --header 'Authorization: Basic YjY4RWdDQjJLOVc5OmdscVBYcWVWcFk2bUVZTWZvMXJhSHlBR2JsdHhoT1N5TjdmdFJpNXc2UUxBRE1oc2NrM25IWFdydUpCdldLODM='
 
 <!-- get plan details -->
 curl --request GET \
-  --url 'https://api.maya.net/connectivity/v1/esim/8910300000049989978/plan/JRNAUHLZIPTH' \
+  --url 'https://api.maya.net/connectivity/v1/esim/8910300000049992500/plan/6PETHX8CQ6Z0' \
   --header 'Accept: application/json' \
   --header 'Authorization: Basic YjY4RWdDQjJLOVc5OmdscVBYcWVWcFk2bUVZTWZvMXJhSHlBR2JsdHhoT1N5TjdmdFJpNXc2UUxBRE1oc2NrM25IWFdydUpCdldLODM='
 

@@ -122,6 +122,12 @@ app.use(
 app.get("/", (_req, res) => res.send("Webhook server running :)"));
 
 // -----------------------------
+// ID helpers
+// -----------------------------
+function normId(x) {
+  return String(x || "").trim().toLowerCase();
+}
+// -----------------------------
 // HTTP helpers (better errors + timeout)
 // -----------------------------
 async function safeFetch(url, options = {}) {
@@ -728,7 +734,11 @@ app.post("/webhooks/order-paid", async (req, res) => {
         for (const p of plans) {
           const planTypeId = p?.plan_type?.id;
           if (!planTypeId) continue;
-          if (String(planTypeId) !== String(mayaPlanId)) continue;
+
+          // NOTE: Shopify metafields may store the same Maya id with different casing.
+          // Maya returns mixed-case ids, Shopify may have uppercase.
+          // We compare using a normalized (lowercased) form.
+          if (normId(planTypeId) !== normId(mayaPlanId)) continue;
 
           const bytesRemaining = toInt_(p?.data_bytes_remaining);
           const activated = isActivated_(p);
@@ -738,6 +748,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
             iccid: e?.iccid,
             esimUid: e?.uid,
             planId: p?.id,
+            planTypeId, // keep Maya's canonical casing from the customer payload
             bytesRemaining: Number.isFinite(bytesRemaining) ? bytesRemaining : Number.POSITIVE_INFINITY,
             activated,
             startTime,
@@ -776,7 +787,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
         best_iccid: best?.iccid || null,
       });
       if (!best?.iccid) {
-        console.warn("⚠️ No matching eSIM/plan found for top-up", { mayaCustomerId, mayaPlanId });
+        console.log("⚠️ No matching eSIM/plan found for top-up", { mayaCustomerId, mayaPlanId });
         await sendAdminAlertEmail({
           subject: `⚠️ Top-up received but no matching eSIM found (Order #${orderId || ""})`,
           html: `
@@ -801,22 +812,25 @@ app.post("/webhooks/order-paid", async (req, res) => {
         bytes_remaining: best.bytesRemaining,
         activated: best.activated,
         start_time: best.startTime,
-        plan_type_id: mayaPlanId,
+        plan_type_id_from_shopify: mayaPlanId,
+        plan_type_id_from_maya: best.planTypeId,
       });
 
       // Apply the top-up qty times (creates NEW plans on the same eSIM)
       for (let q = 0; q < qty; q++) {
-        console.log("📨 Calling Maya createTopUp", { iccid: best.iccid, planTypeId: mayaPlanId });
+        // Use the plan_type_id exactly as Maya returns it (canonical casing)
+        const topUpPlanTypeId = best.planTypeId || mayaPlanId;
+        console.log("📨 Calling Maya createTopUp", { iccid: best.iccid, planTypeId: topUpPlanTypeId });
         try {
           const topupResp = await createMayaTopUp({
             iccid: best.iccid,
-            planTypeId: mayaPlanId,
+            planTypeId: topUpPlanTypeId,
             tag: String(orderId || ""),
           });
 
           console.log("✅ Maya top-up created:", {
             iccid: best.iccid,
-            plan_type_id: mayaPlanId,
+            plan_type_id: topUpPlanTypeId,
             new_plan_id: topupResp?.plan?.id,
             request_id: topupResp?.request_id,
           });
@@ -831,7 +845,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
                 <li><b>Email</b>: ${email || ""}</li>
                 <li><b>Maya customer id</b>: ${mayaCustomerId}</li>
                 <li><b>ICCID</b>: ${best.iccid}</li>
-                <li><b>plan_type_id</b>: ${mayaPlanId}</li>
+                <li><b>plan_type_id</b>: ${topUpPlanTypeId}</li>
                 <li><b>Error</b>: ${(e && e.message) || e}</li>
               </ul>
             `,
