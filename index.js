@@ -683,8 +683,18 @@ app.post("/webhooks/order-paid", async (req, res) => {
       const customer = mayaDetails?.customer;
       const esims = Array.isArray(customer?.esims) ? customer.esims : [];
 
-      // Your rule: only consider ACTIVE eSIMs
-      const activeEsims = esims.filter((e) => String(e?.service_status || "").toLowerCase() === "active");
+      // Allow top-ups even if the eSIM/card is currently inactive.
+      // We only exclude eSIMs that look clearly unusable (e.g. terminated/cancelled).
+      const candidateEsims = esims.filter((e) => {
+        const state = String(e?.state || "").toLowerCase();
+        const service = String(e?.service_status || "").toLowerCase();
+
+        // Exclude hard-stop states (adjust if Maya uses different labels in your account)
+        if (state.includes("terminated") || state.includes("cancel")) return false;
+        if (service.includes("terminated") || service.includes("cancel")) return false;
+
+        return true; // include active + inactive
+      });
 
       // Choose the eSIM whose matching plan (same plan_type.id) has the LOWEST remaining bytes.
       // Secondary tiebreaks: prefer a plan that has been activated; then earliest start_time.
@@ -705,7 +715,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
 
       let best = null; // { iccid, esimUid, planId, bytesRemaining, activated, startTime }
 
-      for (const e of activeEsims) {
+      for (const e of candidateEsims) {
         const plans = Array.isArray(e?.plans) ? e.plans : [];
         for (const p of plans) {
           const planTypeId = p?.plan_type?.id;
@@ -754,9 +764,9 @@ app.post("/webhooks/order-paid", async (req, res) => {
 
       if (!best?.iccid) {
         await sendAdminAlertEmail({
-          subject: `⚠️ Top-up received but no matching ACTIVE eSIM found (Order #${orderId || ""})`,
+          subject: `⚠️ Top-up received but no matching eSIM found (Order #${orderId || ""})`,
           html: `
-            <p>Order contains a <b>top-up</b>, but we couldn't find an ACTIVE eSIM with an existing plan matching this plan_type_id.</p>
+            <p>Order contains a <b>top-up</b>, but we couldn't find any eSIM with an existing plan matching this plan_type_id.</p>
             <ul>
               <li><b>Order ID</b>: ${orderId || ""}</li>
               <li><b>Email</b>: ${email || ""}</li>
