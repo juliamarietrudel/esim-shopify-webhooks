@@ -7,6 +7,33 @@ export function mayaAuthHeader() {
   return `Basic ${auth}`;
 }
 
+// ✅ READ: eSIM details by ICCID (for usage checks)
+export async function getMayaEsimDetailsByIccid(iccid) {
+  const iccidStr = String(iccid || "").trim();
+  if (!iccidStr) throw new Error("getMayaEsimDetailsByIccid: missing iccid");
+
+  const resp = await safeFetch(
+    `${mayaBaseUrl()}/connectivity/v1/esim/${encodeURIComponent(iccidStr)}`,
+    {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: mayaAuthHeader(),
+      },
+    }
+  );
+
+  const data = await parseJsonSafe(resp);
+
+  if (!resp.ok) {
+    console.error("❌ Maya get eSIM failed:", resp.status, data);
+    throw new Error(`Maya get eSIM failed (${resp.status})`);
+  }
+
+  // Maya usually returns { esim: {...} }
+  return data?.esim || null;
+}
+
 function mayaBaseUrl() {
   return (process.env.MAYA_BASE_URL || "https://api.maya.net").trim();
 }
