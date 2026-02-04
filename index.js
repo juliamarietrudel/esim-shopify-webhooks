@@ -4,7 +4,7 @@ import crypto from "crypto";
 import QRCode from "qrcode";
 import { Resend } from "resend";
 
-import { safeFetch } from "./utils/http.js"; // optional (can be removed if unused)
+// import { safeFetch } from "./utils/http.js"; // (unused right now) you can remove
 
 import {
   getVariantConfig,
@@ -21,6 +21,7 @@ import {
   createMayaEsim,
   getMayaCustomerDetails,
   createMayaTopUp,
+  getMayaEsimDetailsByIccid, // ✅ needed for cron
 } from "./services/maya.js";
 
 const app = express();
@@ -34,9 +35,7 @@ const emailEnabled = Boolean(resendApiKey && emailFrom);
 const resend = emailEnabled ? new Resend(resendApiKey) : null;
 
 if (!emailEnabled) {
-  console.warn(
-    "⚠️ Email not configured. Set RESEND_API_KEY and EMAIL_FROM to send eSIM emails."
-  );
+  console.warn("⚠️ Email not configured. Set RESEND_API_KEY and EMAIL_FROM to send eSIM emails.");
 }
 
 async function generateQrPngBase64(payload) {
@@ -73,9 +72,10 @@ function formatEsimEmailHtml({
 }) {
   const safeName = (firstName || "").trim() || "there";
 
-  // Optional rows
   const row = (label, value) =>
-    value ? `<tr><td style="padding:10px 0;"><b>${label}:</b> ${esc(value)}</td></tr>` : "";
+    value
+      ? `<tr><td style="padding:10px 0;"><b>${label}:</b> ${esc(value)}</td></tr>`
+      : "";
 
   const codeRow = (label, value) =>
     value
@@ -89,9 +89,7 @@ function formatEsimEmailHtml({
         </tr>`
       : "";
 
-  const apnRow = apn
-    ? `<tr><td style="padding:10px 0;"><b>APN:</b> ${esc(apn)}</td></tr>`
-    : "";
+  const apnRow = apn ? `<tr><td style="padding:10px 0;"><b>APN:</b> ${esc(apn)}</td></tr>` : "";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -106,11 +104,9 @@ function formatEsimEmailHtml({
     <tr>
       <td align="center">
 
-        <!-- CARD -->
         <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"
           style="width:100%; max-width:800px; background:#FFFFFF; border-radius: 18px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); overflow:hidden;">
 
-          <!-- HEADER -->
           <tr>
             <td style="padding: 20px 24px; border-bottom: 1px solid #E5E7EB;">
               <table width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -133,7 +129,6 @@ function formatEsimEmailHtml({
             </td>
           </tr>
 
-          <!-- MAIN CONTENT -->
           <tr>
             <td style="padding: 28px 24px;">
 
@@ -154,7 +149,6 @@ function formatEsimEmailHtml({
 
               <h2 style="font-size: 16px; color:#0F172A; margin: 0 0 12px;">Plan details</h2>
 
-              <!-- PLAN DETAILS BOX -->
               <table width="100%" cellpadding="0" cellspacing="0" border="0"
                 style="background:#FFFFFF; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px; margin-bottom: 28px;">
                 ${row("Plan", planName)}
@@ -174,9 +168,8 @@ function formatEsimEmailHtml({
                 <p style="font-size:12px; color:#64748B; margin-top:8px;">
                     Scan this QR code to install your eSIM
                 </p>
-                </div>
+              </div>
 
-              <!-- TIP BOX -->
               <table width="100%" cellpadding="0" cellspacing="0" border="0"
                 style="background:#F8FAFC; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px; margin: 12px 0 28px;">
                 <tr>
@@ -186,7 +179,6 @@ function formatEsimEmailHtml({
                 </tr>
               </table>
 
-              <!-- ACTIVATION DETAILS BOX -->
               <table width="100%" cellpadding="0" cellspacing="0" border="0"
                 style="background:#FFFFFF; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px;">
                 ${codeRow("Activation code", activationCode)}
@@ -198,7 +190,6 @@ function formatEsimEmailHtml({
             </td>
           </tr>
 
-          <!-- FOOTER -->
           <tr>
             <td style="padding: 18px 24px; background:#F8FAFC; border-top: 1px solid #E5E7EB; font-size: 12px; color:#64748B;">
               <b>Need help?</b>
@@ -210,7 +201,6 @@ function formatEsimEmailHtml({
           </tr>
 
         </table>
-        <!-- END CARD -->
 
       </td>
     </tr>
@@ -254,35 +244,28 @@ async function sendEsimEmail({
   }
   const qrDataUrl = `data:image/png;base64,${qrBase64}`;
 
-  const subject = orderId
-    ? `Your eSIM QR code (Order #${orderId})`
-    : "Your eSIM QR code";
+  const subject = orderId ? `Your eSIM QR code (Order #${orderId})` : "Your eSIM QR code";
 
-const html = formatEsimEmailHtml({
-  firstName,
-  planName,
-  country,
-  validityDays,
-  dataQuotaMb,
-  iccid,
-  activationCode,
-  manualCode,
-  smdpAddress,
-  apn,
-  qrDataUrl,
-});
+  const html = formatEsimEmailHtml({
+    firstName,
+    planName,
+    country,
+    validityDays,
+    dataQuotaMb,
+    iccid,
+    activationCode,
+    manualCode,
+    smdpAddress,
+    apn,
+    qrDataUrl,
+  });
 
   const result = await resend.emails.send({
     from: emailFrom,
     to,
     subject,
     html,
-    attachments: [
-      {
-        filename: "esim-qr.png",
-        content: qrBase64,
-      },
-    ],
+    attachments: [{ filename: "esim-qr.png", content: qrBase64 }],
   });
 
   if (result?.error) {
@@ -301,12 +284,7 @@ async function sendAdminAlertEmail({ subject, html }) {
     return false;
   }
 
-  const result = await resend.emails.send({
-    from: emailFrom,
-    to,
-    subject,
-    html,
-  });
+  const result = await resend.emails.send({ from: emailFrom, to, subject, html });
 
   if (result?.error) {
     console.error("❌ Resend alert error:", result.error);
@@ -349,21 +327,52 @@ app.get("/cron/check-usage", async (req, res) => {
   try {
     const orders = await getOrdersWithEsims({ daysBack: 365 });
     console.log("✅ Orders with eSIMs found:", orders.length);
-    console.log(orders.slice(0, 5));
 
-    return res.status(200).json({
-      ok: true,
-      count: orders.length,
-      sample: orders.slice(0, 5),
-    });
+    for (const o of orders) {
+      const { orderId, iccid } = o;
+      console.log(`\n🔎 Checking usage for order ${orderId} — ICCID: ${iccid}`);
+
+      const esim = await getMayaEsimDetailsByIccid(iccid);
+      if (!esim) {
+        console.warn(`⚠️ No eSIM found in Maya for ICCID ${iccid}`);
+        continue;
+      }
+
+      const plans = Array.isArray(esim.plans) ? esim.plans : [];
+      const activePlan = plans[0]; // TODO: better plan selection later
+
+      if (!activePlan) {
+        console.warn(`⚠️ No active plan found for ICCID ${iccid}`);
+        continue;
+      }
+
+      const totalBytes = Number(activePlan.data_bytes_total || 0);
+      const remainingBytes = Number(activePlan.data_bytes_remaining || 0);
+
+      if (!totalBytes || totalBytes <= 0) {
+        console.warn(`⚠️ Invalid data quota for ICCID ${iccid}`);
+        continue;
+      }
+
+      const usedBytes = totalBytes - remainingBytes;
+      const percentUsed = Math.round((usedBytes / totalBytes) * 100);
+
+      console.log({
+        orderId,
+        iccid,
+        totalBytes,
+        remainingBytes,
+        percentUsed: `${percentUsed}%`,
+      });
+    }
+
+    return res.status(200).json({ ok: true, count: orders.length });
   } catch (e) {
     console.error("❌ Cron check-usage failed:", e?.message || e);
-    return res.status(500).json({
-      ok: false,
-      error: e?.message || String(e),
-    });
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 });
+
 // -----------------------------
 // Small helpers
 // -----------------------------
@@ -414,10 +423,7 @@ function verifyShopifyWebhook(req) {
     return false;
   }
 
-  const computed = crypto
-    .createHmac("sha256", secret)
-    .update(req.rawBody)
-    .digest("base64");
+  const computed = crypto.createHmac("sha256", secret).update(req.rawBody).digest("base64");
 
   try {
     return crypto.timingSafeEqual(
@@ -463,18 +469,13 @@ app.post("/webhooks/order-paid", async (req, res) => {
   try {
     const flag = await getOrderProcessedFlag(orderId);
     if (flag?.processed) {
-      console.log("🛑 Order already processed, skipping:", {
-        orderId,
-        processedAt: flag.processedAt,
-      });
+      console.log("🛑 Order already processed, skipping:", { orderId, processedAt: flag.processedAt });
       return res.status(200).send("OK");
     }
   } catch (e) {
     console.error("⚠️ Could not read order processed flag:", e?.message || e);
-    // Continue anyway
   }
 
-  // We'll mark processed only if the full workflow ends without critical errors
   let shouldMarkProcessed = true;
 
   // 1) Get or create Maya customer id
@@ -504,6 +505,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
         countryIso2,
         tag: String(orderId),
       });
+
       mayaCustomerId = created.customerId;
       console.log("✅ Maya customer created:", mayaCustomerId);
 
@@ -516,7 +518,6 @@ app.post("/webhooks/order-paid", async (req, res) => {
           });
         } catch (e) {
           console.error("❌ Failed saving Maya customer id to Shopify:", e.message);
-          // Not critical for this order
         }
       } else {
         console.warn("⚠️ No Shopify customer on order (guest checkout).");
@@ -546,7 +547,6 @@ app.post("/webhooks/order-paid", async (req, res) => {
       productType = cfg?.productType || null;
     } catch (e) {
       console.error("❌ Failed to fetch config for variant:", variantId, e.message);
-      // This item can't be processed reliably
       shouldMarkProcessed = false;
       continue;
     }
@@ -655,9 +655,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
             esimUid: e?.uid,
             planId: p?.id,
             planTypeId,
-            bytesRemaining: Number.isFinite(bytesRemaining)
-              ? bytesRemaining
-              : Number.POSITIVE_INFINITY,
+            bytesRemaining: Number.isFinite(bytesRemaining) ? bytesRemaining : Number.POSITIVE_INFINITY,
             activated,
             startTime: p?.start_time,
           };
@@ -774,21 +772,21 @@ app.post("/webhooks/order-paid", async (req, res) => {
           smdp_address: mayaResp?.esim?.smdp_address,
           apn: mayaResp?.esim?.apn,
         });
+
         try {
-            await saveEsimToOrder(orderId, {
-                iccid: mayaResp?.esim?.iccid,
-                esimUid: mayaResp?.esim?.uid,
-            });
-            console.log("✅ Saved eSIM info to Shopify order:", {
-                orderId,
-                iccid: mayaResp?.esim?.iccid,
-                esimUid: mayaResp?.esim?.uid,
-            });
-            } catch (e) {
-            console.error("❌ Failed to save eSIM info to Shopify order:", e?.message || e);
-            shouldMarkProcessed = false;
-            // Pas “critique” si tu veux, mais pour l’alerte 75% ça devient important
-            }
+          await saveEsimToOrder(orderId, {
+            iccid: mayaResp?.esim?.iccid,
+            esimUid: mayaResp?.esim?.uid,
+          });
+          console.log("✅ Saved eSIM info to Shopify order:", {
+            orderId,
+            iccid: mayaResp?.esim?.iccid,
+            esimUid: mayaResp?.esim?.uid,
+          });
+        } catch (e) {
+          console.error("❌ Failed to save eSIM info to Shopify order:", e?.message || e);
+          shouldMarkProcessed = false;
+        }
 
         try {
           await sendEsimEmail({
@@ -799,13 +797,11 @@ app.post("/webhooks/order-paid", async (req, res) => {
             manualCode: mayaResp?.esim?.manual_code,
             smdpAddress: mayaResp?.esim?.smdp_address,
             apn: mayaResp?.esim?.apn,
-            planName: item.variant_title,      // 👈 tu l’as déjà dans Shopify
-            iccid: mayaResp?.esim?.iccid,      // 👈 utile pour support
-            // optionnel:
+            planName: item.variant_title,
+            iccid: mayaResp?.esim?.iccid,
             country: item.title,
           });
         } catch (e) {
-          // Email failure shouldn't re-run Maya provisioning (but you may want admin alert)
           console.error("❌ Failed to send eSIM email:", e?.message || e);
         }
       } catch (e) {
@@ -815,14 +811,12 @@ app.post("/webhooks/order-paid", async (req, res) => {
     }
   }
 
-  // ✅ Mark the order processed ONLY if we had no critical errors
   if (shouldMarkProcessed) {
     try {
       await markOrderProcessed(orderId);
       console.log("✅ Order marked as processed in Shopify:", orderId);
     } catch (e) {
       console.error("❌ Failed to mark order as processed:", e?.message || e);
-      // Not marking processed means Shopify might retry later (acceptable)
     }
   } else {
     console.warn("⚠️ Not marking order as processed (some steps failed):", orderId);
