@@ -1,7 +1,25 @@
+// index.js
 import express from "express";
 import crypto from "crypto";
 import QRCode from "qrcode";
 import { Resend } from "resend";
+
+import { safeFetch } from "./utils/http.js"; // optional (can be removed if unused)
+
+import {
+  getVariantConfig,
+  getOrderProcessedFlag,
+  markOrderProcessed,
+  getMayaCustomerIdFromShopifyCustomer,
+  saveMayaCustomerIdToShopifyCustomer,
+} from "./services/shopify.js";
+
+import {
+  createMayaCustomer,
+  createMayaEsim,
+  getMayaCustomerDetails,
+  createMayaTopUp,
+} from "./services/maya.js";
 
 const app = express();
 
@@ -90,7 +108,6 @@ async function sendEsimEmail({ to, firstName, orderId, activationCode, manualCod
     to,
     subject,
     html,
-    // Attach the QR as a PNG so it works across more email clients
     attachments: [
       {
         filename: "esim-qr.png",
@@ -107,102 +124,6 @@ async function sendEsimEmail({ to, firstName, orderId, activationCode, manualCod
   console.log("✅ eSIM email sent via Resend:", { to, id: result?.data?.id });
   return true;
 }
-
-// TEMP idempotency for testing (resets on restart/deploy)
-const processedOrders = new Set();
-
-app.use(
-  express.json({
-    verify: (req, _res, buf) => {
-      req.rawBody = buf; // Buffer (raw bytes)
-    },
-  })
-);
-
-app.get("/", (_req, res) => res.send("Webhook server running :)"));
-
-// -----------------------------
-// ID helpers
-// -----------------------------
-function normId(x) {
-  return String(x || "").trim().toLowerCase();
-}
-// -----------------------------
-// HTTP helpers (better errors + timeout)
-// -----------------------------
-async function safeFetch(url, options = {}) {
-  const ctrl = new AbortController();
-  const timeoutMs = Number(process.env.FETCH_TIMEOUT_MS || 15000);
-  const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
-
-  try {
-    return await fetch(url, { ...options, signal: ctrl.signal });
-  } catch (e) {
-    // Node fetch often throws "fetch failed"; log the underlying cause if present
-    console.error("❌ FETCH ERROR:", e?.message, "cause:", e?.cause);
-    throw e;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function shopifyGraphqlUrl() {
-  const shopRaw = process.env.SHOPIFY_SHOP_DOMAIN;
-  const versionRaw = process.env.SHOPIFY_API_VERSION || "2025-01";
-
-  const shop = (shopRaw || "").trim();
-  const version = (versionRaw || "").trim();
-
-  if (!shop) throw new Error("Missing SHOPIFY_SHOP_DOMAIN env var");
-  if (!version) throw new Error("Missing SHOPIFY_API_VERSION env var");
-
-  return `https://${shop}/admin/api/${version}/graphql.json`;
-}
-
-async function getMayaCustomerDetails(mayaCustomerId) {
-  const baseUrl = process.env.MAYA_BASE_URL || "https://api.maya.net";
-
-  const resp = await safeFetch(`${baseUrl}/connectivity/v1/customer/${mayaCustomerId}`, {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      Authorization: mayaAuthHeader(),
-    },
-  });
-
-  const data = await resp.json().catch(() => ({}));
-
-  if (!resp.ok) {
-    console.error("❌ Maya get customer failed:", resp.status, data);
-    throw new Error(`Maya get customer failed (${resp.status})`);
-  }
-
-  return data; // contient customer.esims[].plans[]
-}
-
-async function createMayaTopUp({ iccid, planTypeId, tag = "" }) {
-  const baseUrl = process.env.MAYA_BASE_URL || "https://api.maya.net";
-
-  const resp = await safeFetch(`${baseUrl}/connectivity/v1/esim/${iccid}/plan/${planTypeId}`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      Authorization: mayaAuthHeader(),
-    },
-    body: JSON.stringify(tag ? { tag } : {}), // certaines APIs acceptent tag, sinon c’est OK vide
-  });
-
-  const data = await resp.json().catch(() => ({}));
-
-  if (!resp.ok) {
-    console.error("❌ Maya top-up failed:", resp.status, data);
-    throw new Error(`Maya top-up failed (${resp.status})`);
-  }
-
-  return data;
-}
-
 
 async function sendAdminAlertEmail({ subject, html }) {
   const to = (process.env.ALERT_EMAIL_TO || "").trim();
@@ -225,13 +146,55 @@ async function sendAdminAlertEmail({ subject, html }) {
   return true;
 }
 
+// -----------------------------
+// Middleware: JSON + raw body capture (for HMAC)
+// -----------------------------
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      req.rawBody = buf; // Buffer (raw bytes)
+    },
+  })
+);
+
+app.get("/", (_req, res) => res.send("Webhook server running :)"));
+
+// -----------------------------
+// Small helpers
+// -----------------------------
+function normId(x) {
+  return String(x || "").trim().toLowerCase();
+}
+
+function pickBuyerFromOrder(order) {
+  const email = order?.email || order?.contact_email || "";
+
+  const firstName =
+    order?.customer?.first_name ||
+    order?.billing_address?.first_name ||
+    order?.shipping_address?.first_name ||
+    "";
+
+  const lastName =
+    order?.customer?.last_name ||
+    order?.billing_address?.last_name ||
+    order?.shipping_address?.last_name ||
+    "";
+
+  const countryIso2 =
+    order?.billing_address?.country_code ||
+    order?.shipping_address?.country_code ||
+    "US";
+
+  return { email, firstName, lastName, countryIso2 };
+}
 
 // -----------------------------
 // Shopify signature verification
 // -----------------------------
 function verifyShopifyWebhook(req) {
   const hmacHeader = req.get("X-Shopify-Hmac-Sha256") || "";
-  const secret = process.env.WEBHOOK_API_KEY; // Shopify app API secret key
+  const secret = process.env.WEBHOOK_API_KEY;
 
   if (!secret) {
     console.error("❌ Missing WEBHOOK_API_KEY env var on server");
@@ -262,267 +225,6 @@ function verifyShopifyWebhook(req) {
   }
 }
 
-// --------------------------------------
-// Shopify Admin API: read variant metafield
-// --------------------------------------
-async function getVariantConfig(variantId) {
-  const token = process.env.API_ACCESS_TOKEN;
-  const url = shopifyGraphqlUrl();
-  if (!token) throw new Error("Missing API_ACCESS_TOKEN env var");
-
-  const gid = `gid://shopify/ProductVariant/${variantId}`;
-
-  const query = `
-    query ($id: ID!) {
-      productVariant(id: $id) {
-        id
-        title
-
-        mayaPlanId: metafield(namespace: "custom", key: "maya_plan_id") { value }
-        productType: metafield(namespace: "custom", key: "type_de_produit") { value }
-      }
-    }
-  `;
-
-  const resp = await safeFetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": token,
-    },
-    body: JSON.stringify({ query, variables: { id: gid } }),
-  });
-
-  const json = await resp.json().catch(() => ({}));
-
-  if (!resp.ok || json.errors) {
-    console.error("❌ Shopify GraphQL error:", json.errors || json);
-    throw new Error(`Shopify GraphQL failed (${resp.status})`);
-  }
-
-  const v = json?.data?.productVariant;
-  const mayaPlanId = (v?.mayaPlanId?.value || "").trim() || null;
-  const productType = (v?.productType?.value || "").trim().toLowerCase() || null;
-
-  return { mayaPlanId, productType };
-}
-
-// Backwards-compat helper (older code paths may still call this)
-// Returns the Maya plan_type_id stored on the variant.
-async function getMayaPlanIdForVariant(variantId) {
-  const cfg = await getVariantConfig(variantId);
-  return cfg?.mayaPlanId || null;
-}
-
-// -----------------------------
-// Maya: Basic Auth header
-// -----------------------------
-function mayaAuthHeader() {
-  const auth = process.env.MAYA_AUTH; // base64(username:password)
-  if (!auth) throw new Error("Missing MAYA_AUTH env var");
-  return `Basic ${auth}`;
-}
-
-async function saveMayaCustomerIdToShopifyCustomer(shopifyCustomerId, mayaCustomerId) {
-  const token = process.env.API_ACCESS_TOKEN;
-  const url = shopifyGraphqlUrl();
-
-  if (!token) throw new Error("Missing API_ACCESS_TOKEN env var");
-
-  const gid = `gid://shopify/Customer/${shopifyCustomerId}`;
-
-  const mutation = `
-    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
-      metafieldsSet(metafields: $metafields) {
-        metafields { id key value }
-        userErrors { field message }
-      }
-    }
-  `;
-
-  const variables = {
-    metafields: [
-      {
-        ownerId: gid,
-        namespace: "custom",
-        key: "maya_customer_id",
-        type: "single_line_text_field",
-        value: String(mayaCustomerId),
-      },
-    ],
-  };
-
-  const resp = await safeFetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": token,
-    },
-    body: JSON.stringify({ query: mutation, variables }),
-  });
-
-  const json = await resp.json().catch(() => ({}));
-
-  const userErrors = json?.data?.metafieldsSet?.userErrors || [];
-  if (!resp.ok || json.errors || userErrors.length) {
-    console.error("❌ Shopify metafield write error:", {
-      status: resp.status,
-      errors: json.errors,
-      userErrors,
-      response: json,
-    });
-    throw new Error(userErrors[0]?.message || "Failed to write Shopify customer metafield");
-  }
-
-  return true;
-}
-
-async function getMayaCustomerIdFromShopifyCustomer(shopifyCustomerId) {
-  const token = process.env.API_ACCESS_TOKEN;
-  const url = shopifyGraphqlUrl();
-
-  console.log("🔎 GraphQL URL:", url);
-
-  if (!token) throw new Error("Missing API_ACCESS_TOKEN env var");
-
-  const gid = `gid://shopify/Customer/${shopifyCustomerId}`;
-
-  const query = `
-    query ($id: ID!) {
-      customer(id: $id) {
-        id
-        metafield(namespace: "custom", key: "maya_customer_id") {
-          value
-        }
-      }
-    }
-  `;
-
-  const resp = await safeFetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": token,
-    },
-    body: JSON.stringify({ query, variables: { id: gid } }),
-  });
-
-  const json = await resp.json().catch(() => ({}));
-
-  if (!resp.ok || json.errors) {
-    console.error("❌ Shopify customer metafield read error:", json.errors || json);
-    throw new Error(`Shopify GraphQL failed (${resp.status})`);
-  }
-
-  return json?.data?.customer?.metafield?.value || null; // string or null
-}
-
-// -----------------------------
-// Maya: Create customer
-// POST https://api.maya.net/connectivity/v1/customer/
-// -----------------------------
-async function createMayaCustomer({ email, firstName, lastName, countryIso2, tag = "" }) {
-  const baseUrl = process.env.MAYA_BASE_URL || "https://api.maya.net";
-
-  const body = {
-    email,
-    first_name: firstName || "",
-    last_name: lastName || "",
-    country: countryIso2 || "US",
-  };
-
-  if (tag) body.tag = tag;
-
-  const resp = await safeFetch(`${baseUrl}/connectivity/v1/customer/`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      Authorization: mayaAuthHeader(),
-    },
-    body: JSON.stringify(body),
-  });
-
-  const data = await resp.json().catch(() => ({}));
-
-  if (!resp.ok) {
-    console.error("❌ Maya create customer failed:", resp.status, data);
-    throw new Error(`Maya create customer failed (${resp.status})`);
-  }
-
-  // Depending on the API, the created customer may be in data.customer or similar.
-  // We'll try both safe paths:
-  const customerId = data?.customer?.id || data?.customer?.uid || data?.id || null;
-
-  if (!customerId) {
-    console.error("❌ Could not find customer id in Maya response:", data);
-    throw new Error("Maya customer created but no customer id returned");
-  }
-
-  return { raw: data, customerId };
-}
-
-// -----------------------------
-// Maya: Create eSIM + data plan attached to customer
-// POST https://api.maya.net/connectivity/v1/esim
-// -----------------------------
-async function createMayaEsim({ planTypeId, customerId, tag = "" }) {
-  const baseUrl = process.env.MAYA_BASE_URL || "https://api.maya.net";
-
-  const body = {
-    plan_type_id: planTypeId,
-    customer_id: customerId,
-  };
-
-  if (tag) body.tag = tag;
-
-  const resp = await safeFetch(`${baseUrl}/connectivity/v1/esim`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      Authorization: mayaAuthHeader(),
-    },
-    body: JSON.stringify(body),
-  });
-
-  const data = await resp.json().catch(() => ({}));
-
-  if (!resp.ok) {
-    console.error("❌ Maya create eSIM failed:", resp.status, data);
-    throw new Error(`Maya create eSIM failed (${resp.status})`);
-  }
-
-  return data;
-}
-
-// -----------------------------
-// Helpers: get buyer info from order
-// -----------------------------
-function pickBuyerFromOrder(order) {
-  const email = order?.email || order?.contact_email || "";
-
-  const firstName =
-    order?.customer?.first_name ||
-    order?.billing_address?.first_name ||
-    order?.shipping_address?.first_name ||
-    "";
-
-  const lastName =
-    order?.customer?.last_name ||
-    order?.billing_address?.last_name ||
-    order?.shipping_address?.last_name ||
-    "";
-
-  // Shopify gives country_code as ISO2 (CA/US/etc.) in addresses
-  const countryIso2 =
-    order?.billing_address?.country_code ||
-    order?.shipping_address?.country_code ||
-    "US";
-
-  return { email, firstName, lastName, countryIso2 };
-}
-
 // -----------------------------
 // Webhook: orders/paid
 // -----------------------------
@@ -541,44 +243,53 @@ app.post("/webhooks/order-paid", async (req, res) => {
 
   const order = req.body || {};
   const orderId = order?.id;
+
   const { email, firstName, lastName, countryIso2 } = pickBuyerFromOrder(order);
 
   console.log("Order ID:", orderId);
   console.log("Buyer:", { email, firstName, lastName, countryIso2 });
-  console.log("order.customer_id:", order?.customer_id);
-  console.log("order.customer?.id:", order?.customer?.id);
-  console.log("order.customer:", order?.customer);
 
-  // TEMP idempotency: avoid double provisioning if Shopify retries
-  if (orderId && processedOrders.has(orderId)) {
-    console.log("🔁 Duplicate webhook ignored for order:", orderId);
+  if (!orderId) {
+    console.warn("⚠️ No order id in payload, exiting.");
     return res.status(200).send("OK");
   }
-  if (orderId) processedOrders.add(orderId);
 
-  // 1) Get or create Maya customer id (reuse Shopify metafield if present)
+  // ✅ IDEMPOTENCY (Order metafields)
+  try {
+    const flag = await getOrderProcessedFlag(orderId);
+    if (flag?.processed) {
+      console.log("🛑 Order already processed, skipping:", {
+        orderId,
+        processedAt: flag.processedAt,
+      });
+      return res.status(200).send("OK");
+    }
+  } catch (e) {
+    console.error("⚠️ Could not read order processed flag:", e?.message || e);
+    // Continue anyway
+  }
+
+  // We'll mark processed only if the full workflow ends without critical errors
+  let shouldMarkProcessed = true;
+
+  // 1) Get or create Maya customer id
   let mayaCustomerId = null;
-
   const shopifyCustomerId = order?.customer?.id || order?.customer_id || null;
   console.log("Shopify customer id on order:", shopifyCustomerId);
 
   if (shopifyCustomerId) {
-  try {
+    try {
       const existing = await getMayaCustomerIdFromShopifyCustomer(shopifyCustomerId);
       const existingTrimmed = (existing || "").trim();
-
       if (existingTrimmed) {
         mayaCustomerId = existingTrimmed;
-        console.log("✅ Reusing Maya customer id from Shopify metafield:", mayaCustomerId);
-      } else {
-        console.log("ℹ️ Shopify metafield maya_customer_id is empty (will create Maya customer).");
+        console.log("✅ Reusing Maya customer id from Shopify customer metafield:", mayaCustomerId);
       }
     } catch (e) {
       console.error("❌ Could not read Shopify customer metafield:", e.message);
     }
   }
 
-  // If not found, create Maya customer + save it to Shopify metafield
   if (!mayaCustomerId) {
     try {
       const created = await createMayaCustomer({
@@ -586,7 +297,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
         firstName,
         lastName,
         countryIso2,
-        tag: String(orderId || ""),
+        tag: String(orderId),
       });
       mayaCustomerId = created.customerId;
       console.log("✅ Maya customer created:", mayaCustomerId);
@@ -600,17 +311,19 @@ app.post("/webhooks/order-paid", async (req, res) => {
           });
         } catch (e) {
           console.error("❌ Failed saving Maya customer id to Shopify:", e.message);
+          // Not critical for this order
         }
       } else {
-        console.warn("⚠️ No Shopify customer on order, can't persist Maya ID (guest checkout).");
+        console.warn("⚠️ No Shopify customer on order (guest checkout).");
       }
     } catch (e) {
       console.error("❌ Maya customer creation failed:", e.message);
+      shouldMarkProcessed = false;
       return res.status(200).send("OK");
     }
   }
 
-  // 2) Create eSIM(s) attached to that customer
+  // 2) Process line items
   const items = order?.line_items || [];
   console.log("🧾 LINE ITEMS:", items.length);
 
@@ -621,12 +334,16 @@ app.post("/webhooks/order-paid", async (req, res) => {
 
     let mayaPlanId = null;
     let productType = null;
+
     try {
       const cfg = await getVariantConfig(variantId);
       mayaPlanId = cfg?.mayaPlanId || null;
       productType = cfg?.productType || null;
     } catch (e) {
-      console.error("❌ Failed to fetch metafield for variant:", variantId, e.message);
+      console.error("❌ Failed to fetch config for variant:", variantId, e.message);
+      // This item can't be processed reliably
+      shouldMarkProcessed = false;
+      continue;
     }
 
     console.log(`Item #${i + 1}:`, {
@@ -635,28 +352,29 @@ app.post("/webhooks/order-paid", async (req, res) => {
       variant_id: variantId,
       quantity: qty,
       maya_plan_id: mayaPlanId,
-      product_type: productType
+      product_type: productType,
     });
 
     if (!mayaPlanId) {
       console.error("❌ Missing metafield custom.maya_plan_id for variant:", variantId);
+      shouldMarkProcessed = false;
       continue;
     }
 
     // -----------------------------
     // RECHARGE (TOP UP)
     // -----------------------------
-    console.log("🧩 Variant config:", { variantId, productType, mayaPlanId });
     if (productType === "recharge") {
       console.log("🔄 Entering TOP-UP flow", { orderId, variantId, qty, mayaPlanId, mayaCustomerId });
-      // Must already have a Maya customer id to find existing eSIMs
+
       if (!mayaCustomerId) {
+        shouldMarkProcessed = false;
         await sendAdminAlertEmail({
-          subject: `⚠️ Top-up received but no Maya customer id (Order #${orderId || ""})`,
+          subject: `⚠️ Top-up received but no Maya customer id (Order #${orderId})`,
           html: `
             <p>Order contains a <b>top-up</b>, but we could not resolve a Maya customer id.</p>
             <ul>
-              <li><b>Order ID</b>: ${orderId || ""}</li>
+              <li><b>Order ID</b>: ${orderId}</li>
               <li><b>Email</b>: ${email || ""}</li>
               <li><b>Variant ID</b>: ${variantId}</li>
               <li><b>Maya plan_type_id</b>: ${mayaPlanId}</li>
@@ -671,12 +389,13 @@ app.post("/webhooks/order-paid", async (req, res) => {
       try {
         mayaDetails = await getMayaCustomerDetails(mayaCustomerId);
       } catch (e) {
+        shouldMarkProcessed = false;
         await sendAdminAlertEmail({
-          subject: `⚠️ Top-up failed: could not fetch Maya customer (Order #${orderId || ""})`,
+          subject: `⚠️ Top-up failed: could not fetch Maya customer (Order #${orderId})`,
           html: `
             <p>Order contains a <b>top-up</b>, but fetching the Maya customer failed.</p>
             <ul>
-              <li><b>Order ID</b>: ${orderId || ""}</li>
+              <li><b>Order ID</b>: ${orderId}</li>
               <li><b>Email</b>: ${email || ""}</li>
               <li><b>Maya customer id</b>: ${mayaCustomerId}</li>
               <li><b>Variant ID</b>: ${variantId}</li>
@@ -693,65 +412,49 @@ app.post("/webhooks/order-paid", async (req, res) => {
       const esims = Array.isArray(customer?.esims) ? customer.esims : [];
       console.log("👤 Maya customer loaded", { mayaCustomerId, esims_count: esims.length });
 
-      // Allow top-ups even if the eSIM/card is currently inactive.
-      // We only exclude eSIMs that look clearly unusable (e.g. terminated/cancelled).
       const candidateEsims = esims.filter((e) => {
         const state = String(e?.state || "").toLowerCase();
         const service = String(e?.service_status || "").toLowerCase();
-
-        // Exclude hard-stop states (adjust if Maya uses different labels in your account)
         if (state.includes("terminated") || state.includes("cancel")) return false;
         if (service.includes("terminated") || service.includes("cancel")) return false;
-
-        return true; // include active + inactive
-      });
-      console.log("📡 Candidate eSIMs for top-up", {
-        total_esims: esims.length,
-        candidate_esims: candidateEsims.length,
+        return true;
       });
 
-      // Choose the eSIM whose matching plan (same plan_type.id) has the LOWEST remaining bytes.
-      // Secondary tiebreaks: prefer a plan that has been activated; then earliest start_time.
       function isActivated_(plan) {
         const da = String(plan?.date_activated || "");
         return da && da !== "0000-00-00 00:00:00";
       }
-
       function toInt_(v) {
         const n = Number(v);
         return Number.isFinite(n) ? n : NaN;
       }
-
       function timeValue_(s) {
         const t = Date.parse(String(s || ""));
         return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
       }
 
-      let best = null; // { iccid, esimUid, planId, bytesRemaining, activated, startTime }
+      let best = null;
 
       for (const e of candidateEsims) {
         const plans = Array.isArray(e?.plans) ? e.plans : [];
         for (const p of plans) {
           const planTypeId = p?.plan_type?.id;
           if (!planTypeId) continue;
-
-          // NOTE: Shopify metafields may store the same Maya id with different casing.
-          // Maya returns mixed-case ids, Shopify may have uppercase.
-          // We compare using a normalized (lowercased) form.
           if (normId(planTypeId) !== normId(mayaPlanId)) continue;
 
           const bytesRemaining = toInt_(p?.data_bytes_remaining);
           const activated = isActivated_(p);
-          const startTime = p?.start_time;
 
           const candidate = {
             iccid: e?.iccid,
             esimUid: e?.uid,
             planId: p?.id,
-            planTypeId, // keep Maya's canonical casing from the customer payload
-            bytesRemaining: Number.isFinite(bytesRemaining) ? bytesRemaining : Number.POSITIVE_INFINITY,
+            planTypeId,
+            bytesRemaining: Number.isFinite(bytesRemaining)
+              ? bytesRemaining
+              : Number.POSITIVE_INFINITY,
             activated,
-            startTime,
+            startTime: p?.start_time,
           };
 
           if (!best) {
@@ -759,21 +462,18 @@ app.post("/webhooks/order-paid", async (req, res) => {
             continue;
           }
 
-          // 1) lowest remaining bytes wins
           if (candidate.bytesRemaining < best.bytesRemaining) {
             best = candidate;
             continue;
           }
           if (candidate.bytesRemaining > best.bytesRemaining) continue;
 
-          // 2) prefer activated plan
           if (candidate.activated && !best.activated) {
             best = candidate;
             continue;
           }
           if (!candidate.activated && best.activated) continue;
 
-          // 3) earliest start_time
           if (timeValue_(candidate.startTime) < timeValue_(best.startTime)) {
             best = candidate;
             continue;
@@ -781,19 +481,14 @@ app.post("/webhooks/order-paid", async (req, res) => {
         }
       }
 
-      console.log("🔎 Matching plan search finished", {
-        mayaPlanId,
-        best_found: Boolean(best?.iccid),
-        best_iccid: best?.iccid || null,
-      });
       if (!best?.iccid) {
-        console.log("⚠️ No matching eSIM/plan found for top-up", { mayaCustomerId, mayaPlanId });
+        shouldMarkProcessed = false;
         await sendAdminAlertEmail({
-          subject: `⚠️ Top-up received but no matching eSIM found (Order #${orderId || ""})`,
+          subject: `⚠️ Top-up received but no matching eSIM found (Order #${orderId})`,
           html: `
             <p>Order contains a <b>top-up</b>, but we couldn't find any eSIM with an existing plan matching this plan_type_id.</p>
             <ul>
-              <li><b>Order ID</b>: ${orderId || ""}</li>
+              <li><b>Order ID</b>: ${orderId}</li>
               <li><b>Email</b>: ${email || ""}</li>
               <li><b>Maya customer id</b>: ${mayaCustomerId}</li>
               <li><b>Variant ID</b>: ${variantId}</li>
@@ -816,16 +511,13 @@ app.post("/webhooks/order-paid", async (req, res) => {
         plan_type_id_from_maya: best.planTypeId,
       });
 
-      // Apply the top-up qty times (creates NEW plans on the same eSIM)
       for (let q = 0; q < qty; q++) {
-        // Use the plan_type_id exactly as Maya returns it (canonical casing)
         const topUpPlanTypeId = best.planTypeId || mayaPlanId;
-        console.log("📨 Calling Maya createTopUp", { iccid: best.iccid, planTypeId: topUpPlanTypeId });
         try {
           const topupResp = await createMayaTopUp({
             iccid: best.iccid,
             planTypeId: topUpPlanTypeId,
-            tag: String(orderId || ""),
+            tag: String(orderId),
           });
 
           console.log("✅ Maya top-up created:", {
@@ -835,13 +527,14 @@ app.post("/webhooks/order-paid", async (req, res) => {
             request_id: topupResp?.request_id,
           });
         } catch (e) {
+          shouldMarkProcessed = false;
           console.error("❌ Maya top-up error:", e.message);
           await sendAdminAlertEmail({
-            subject: `❌ Top-up failed in Maya (Order #${orderId || ""})`,
+            subject: `❌ Top-up failed in Maya (Order #${orderId})`,
             html: `
               <p>Creating a Maya top-up failed.</p>
               <ul>
-                <li><b>Order ID</b>: ${orderId || ""}</li>
+                <li><b>Order ID</b>: ${orderId}</li>
                 <li><b>Email</b>: ${email || ""}</li>
                 <li><b>Maya customer id</b>: ${mayaCustomerId}</li>
                 <li><b>ICCID</b>: ${best.iccid}</li>
@@ -853,19 +546,21 @@ app.post("/webhooks/order-paid", async (req, res) => {
         }
       }
 
-      // Done with this line item (do NOT create a new eSIM)
       continue;
     }
 
+    // -----------------------------
+    // NORMAL eSIM purchase: create eSIM(s)
+    // -----------------------------
     for (let q = 0; q < qty; q++) {
       try {
         const mayaResp = await createMayaEsim({
           planTypeId: mayaPlanId,
           customerId: mayaCustomerId,
-          tag: String(orderId || ""), // traceability
+          tag: String(orderId),
         });
 
-        console.log("✅ Maya eSIM created (attached to customer):", {
+        console.log("✅ Maya eSIM created:", {
           maya_customer_id: mayaCustomerId,
           maya_esim_uid: mayaResp?.esim?.uid,
           iccid: mayaResp?.esim?.iccid,
@@ -875,7 +570,6 @@ app.post("/webhooks/order-paid", async (req, res) => {
           apn: mayaResp?.esim?.apn,
         });
 
-        // 3) Email QR code to customer (Resend)
         try {
           await sendEsimEmail({
             to: email,
@@ -887,16 +581,32 @@ app.post("/webhooks/order-paid", async (req, res) => {
             apn: mayaResp?.esim?.apn,
           });
         } catch (e) {
+          // Email failure shouldn't re-run Maya provisioning (but you may want admin alert)
           console.error("❌ Failed to send eSIM email:", e?.message || e);
         }
       } catch (e) {
+        shouldMarkProcessed = false;
         console.error("❌ Maya provisioning error:", e.message);
       }
     }
   }
 
+  // ✅ Mark the order processed ONLY if we had no critical errors
+  if (shouldMarkProcessed) {
+    try {
+      await markOrderProcessed(orderId);
+      console.log("✅ Order marked as processed in Shopify:", orderId);
+    } catch (e) {
+      console.error("❌ Failed to mark order as processed:", e?.message || e);
+      // Not marking processed means Shopify might retry later (acceptable)
+    }
+  } else {
+    console.warn("⚠️ Not marking order as processed (some steps failed):", orderId);
+  }
+
   return res.status(200).send("OK");
 });
 
+// -----------------------------
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Listening on ${port}`));

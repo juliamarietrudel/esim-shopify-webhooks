@@ -15,7 +15,7 @@ curl --request GET \
 
 <!-- get customer info (for customer with id: ZMPSHYKZEEUF) -->
 curl --request GET \
-  --url 'https://api.maya.net/connectivity/v1/customer/9VFM72RCHXF3' \
+  --url 'https://api.maya.net/connectivity/v1/customer/9vFm72RchXf3' \
   --header 'Accept: application/json' \
   --header 'Authorization: Basic YjY4RWdDQjJLOVc5OmdscVBYcWVWcFk2bUVZTWZvMXJhSHlBR2JsdHhoT1N5TjdmdFJpNXc2UUxBRE1oc2NrM25IWFdydUpCdldLODM='
 
