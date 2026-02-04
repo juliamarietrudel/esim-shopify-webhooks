@@ -327,6 +327,27 @@ app.use(
 app.get("/", (_req, res) => res.send("Webhook server running :)"));
 
 // -----------------------------
+// CRON (protected endpoint)
+// -----------------------------
+app.get("/cron/check-usage", async (req, res) => {
+  const secret = (process.env.CRON_SECRET || "").trim();
+  const token = String(req.query.token || "").trim();
+
+  if (!secret) {
+    console.error("❌ Missing CRON_SECRET env var");
+    return res.status(500).send("Server not configured");
+  }
+
+  if (!token || token !== secret) {
+    return res.status(401).send("Unauthorized");
+  }
+
+  console.log("🕒 CRON check-usage triggered:", new Date().toISOString());
+
+  // TODO: later we'll run the real usage-check logic here
+  return res.status(200).send("OK (cron stub)");
+});
+// -----------------------------
 // Small helpers
 // -----------------------------
 function normId(x) {

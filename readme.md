@@ -8,7 +8,7 @@ echo -n 'API_KEY:API_SECRET' | base64
 <!-- REQUEST WITH AUTHENTICATION -->
 <!-- get all products -->
 curl --request GET \
-  --url 'https://api.maya.net/connectivity/v1/account/products?region=europe&country=us' \
+  --url 'https://api.maya.net/connectivity/v1/account/products' \
   --header 'Accept: application/json' \
   --header 'Authorization: Basic YjY4RWdDQjJLOVc5OmdscVBYcWVWcFk2bUVZTWZvMXJhSHlBR2JsdHhoT1N5TjdmdFJpNXc2UUxBRE1oc2NrM25IWFdydUpCdldLODM='
 
