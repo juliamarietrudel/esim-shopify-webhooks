@@ -53,21 +53,37 @@ function formatEsimEmailHtml({ firstName, activationCode, manualCode, smdpAddres
   const safeApn = apn ? `<li><b>APN</b>: ${apn}</li>` : "";
 
   return `
-  <div style="font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Arial; line-height: 1.5;">
-    <h2>Your eSIM is ready ✅</h2>
-    <p>Hi ${safeName},</p>
-    <p>To install your eSIM, scan the QR code attached to this email on your eSIM-compatible device.</p>
+<div style="font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Arial; line-height: 1.5;">
+  <h2>Your eSIM is ready ✅</h2>
 
-    <h3>Activation details (backup)</h3>
-    <ul>
-      <li><b>Activation code</b>: <code>${activationCode || ""}</code></li>
-      <li><b>Manual code</b>: <code>${manualCode || ""}</code></li>
-      <li><b>SM-DP+ address</b>: <code>${smdpAddress || ""}</code></li>
-      ${safeApn}
-    </ul>
+  <p>Hi ${safeName},</p>
 
-    <p style="margin-top: 16px;">If you have any issues, reply to this email and we’ll help you.</p>
-  </div>
+  <p>
+    Your eSIM for <b>${planName || "your selected plan"}</b> is now ready.
+    To install it, scan the QR code attached to this email on your eSIM-compatible device.
+  </p>
+
+  <h3>Plan details</h3>
+  <ul>
+    ${planName ? `<li><b>Plan</b>: ${planName}</li>` : ""}
+    ${country ? `<li><b>Destination</b>: ${country}</li>` : ""}
+    ${validityDays ? `<li><b>Validity</b>: ${validityDays} days</li>` : ""}
+    ${dataQuotaMb ? `<li><b>Data</b>: ${dataQuotaMb} MB</li>` : ""}
+    ${iccid ? `<li><b>ICCID</b>: <code>${iccid}</code></li>` : ""}
+  </ul>
+
+  <h3>Activation details (backup)</h3>
+  <ul>
+    <li><b>Activation code</b>: <code>${activationCode || ""}</code></li>
+    <li><b>Manual code</b>: <code>${manualCode || ""}</code></li>
+    <li><b>SM-DP+ address</b>: <code>${smdpAddress || ""}</code></li>
+    ${safeApn}
+  </ul>
+
+  <p style="margin-top: 16px;">
+    If you have any issues, reply to this email and we’ll help you.
+  </p>
+</div>
   `;
 }
 
