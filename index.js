@@ -106,7 +106,7 @@ function formatEsimEmailHtml({
 
         <!-- CARD -->
         <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"
-          style="width:100%; max-width:600px; background:#FFFFFF; border-radius: 18px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); overflow:hidden;">
+          style="width:100%; max-width:800px; background:#FFFFFF; border-radius: 18px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); overflow:hidden;">
 
           <!-- HEADER -->
           <tr>
