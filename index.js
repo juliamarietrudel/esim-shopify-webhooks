@@ -48,54 +48,161 @@ async function generateQrPngBase64(payload) {
   return pngBuffer.toString("base64");
 }
 
+function esc(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 function formatEsimEmailHtml({
   firstName,
-  activationCode,
-  manualCode,
-  smdpAddress,
-  apn,
   planName,
   country,
   validityDays,
   dataQuotaMb,
   iccid,
+  activationCode,
+  manualCode,
+  smdpAddress,
+  apn,
 }) {
   const safeName = (firstName || "").trim() || "there";
-  const safeApn = apn ? `<li><b>APN</b>: ${apn}</li>` : "";
 
-  return `
-<div style="font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Arial; line-height: 1.5;">
-  <h2>Your eSIM is ready ✅</h2>
+  // Optional rows
+  const row = (label, value) =>
+    value ? `<tr><td style="padding:10px 0;"><b>${label}:</b> ${esc(value)}</td></tr>` : "";
 
-  <p>Hi ${safeName},</p>
+  const codeRow = (label, value) =>
+    value
+      ? `<tr>
+          <td style="padding:10px 0;">
+            <b>${label}:</b>
+            <code style="background:#F1F5F9; padding:4px 8px; border-radius:6px;">
+              ${esc(value)}
+            </code>
+          </td>
+        </tr>`
+      : "";
 
-  <p>
-    Your eSIM for <b>${planName || "your selected plan"}</b> is now ready.
-    To install it, scan the QR code attached to this email on your eSIM-compatible device.
-  </p>
+  const apnRow = apn
+    ? `<tr><td style="padding:10px 0;"><b>APN:</b> ${esc(apn)}</td></tr>`
+    : "";
 
-  <h3>Plan details</h3>
-  <ul>
-    ${planName ? `<li><b>Plan</b>: ${planName}</li>` : ""}
-    ${country ? `<li><b>Destination</b>: ${country}</li>` : ""}
-    ${validityDays ? `<li><b>Validity</b>: ${validityDays} days</li>` : ""}
-    ${dataQuotaMb ? `<li><b>Data</b>: ${dataQuotaMb} MB</li>` : ""}
-    ${iccid ? `<li><b>ICCID</b>: <code>${iccid}</code></li>` : ""}
-  </ul>
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Your eSIM is ready</title>
+</head>
 
-  <h3>Activation details (backup)</h3>
-  <ul>
-    <li><b>Activation code</b>: <code>${activationCode || ""}</code></li>
-    <li><b>Manual code</b>: <code>${manualCode || ""}</code></li>
-    <li><b>SM-DP+ address</b>: <code>${smdpAddress || ""}</code></li>
-    ${safeApn}
-  </ul>
+<body style="margin:0; padding:0; background:#F6FAFD; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Arial;">
 
-  <p style="margin-top: 16px;">
-    If you have any issues, reply to this email and we’ll help you.
-  </p>
-</div>
-  `;
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="padding: 32px 0;">
+    <tr>
+      <td align="center">
+
+        <!-- CARD -->
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"
+          style="width:100%; max-width:600px; background:#FFFFFF; border-radius: 18px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); overflow:hidden;">
+
+          <!-- HEADER -->
+          <tr>
+            <td style="padding: 20px 24px; border-bottom: 1px solid #E5E7EB;">
+              <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td>
+                    <img 
+                      src="https://quebecesim.ca/cdn/shop/files/1000008019.png?v=1737480349&width=600"
+                      alt="Québec eSIM"
+                      width="80"
+                      style="display:block; max-width:140px; height:auto;"
+                    />
+                  </td>
+                  <td align="right">
+                    <span style="display:inline-block; padding:8px 12px; border-radius:999px; background:#0CA3EC; color:#FFFFFF; font-weight:600; font-size:12px;">
+                      eSIM
+                    </span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- MAIN CONTENT -->
+          <tr>
+            <td style="padding: 28px 24px;">
+
+              <h1 style="margin: 0 0 16px; font-size: 22px; color:#0F172A;">
+                Your eSIM is ready!
+              </h1>
+
+              <p style="font-size: 15px; color:#334155; margin: 0 0 20px;">
+                Hi <b>${esc(safeName)}</b>,
+              </p>
+
+              <p style="font-size: 15px; color:#334155; margin: 0 0 28px;">
+                Your eSIM for <b style="color:#0CA3EC;">${esc(planName || "your plan")}</b> is now ready.
+                Scan the QR code attached to install it on your device.
+              </p>
+
+              <div style="height: 16px;"></div>
+
+              <h2 style="font-size: 16px; color:#0F172A; margin: 0 0 12px;">Plan details</h2>
+
+              <!-- PLAN DETAILS BOX -->
+              <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                style="background:#FFFFFF; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px; margin-bottom: 28px;">
+                ${row("Plan", planName)}
+                ${row("Destination", country)}
+                ${row("Validity", validityDays ? `${validityDays} days` : "")}
+                ${row("Data", dataQuotaMb ? `${dataQuotaMb} MB` : "")}
+                ${codeRow("ICCID", iccid)}
+              </table>
+
+              <!-- TIP BOX -->
+              <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                style="background:#F8FAFC; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px; margin: 12px 0 28px;">
+                <tr>
+                  <td style="font-size: 13px; color:#475569;">
+                    <b>Tip:</b> If you’re using the same phone, open this email on another device to scan the QR code.
+                  </td>
+                </tr>
+              </table>
+
+              <!-- ACTIVATION DETAILS BOX -->
+              <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                style="background:#FFFFFF; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px;">
+                ${codeRow("Activation code", activationCode)}
+                ${codeRow("Manual code", manualCode)}
+                ${codeRow("SM-DP+ address", smdpAddress)}
+                ${apnRow}
+              </table>
+
+            </td>
+          </tr>
+
+          <!-- FOOTER -->
+          <tr>
+            <td style="padding: 18px 24px; background:#F8FAFC; border-top: 1px solid #E5E7EB; font-size: 12px; color:#64748B;">
+              <b>Need help?</b>
+              <a href="https://quebecesim.ca/pages/contactez-nous" style="text-decoration:none; color: rgb(94, 94, 94);">
+                Contactez-nous
+              </a><br/>
+              © 2026 Québec E-Sim • Powered by Maya
+            </td>
+          </tr>
+
+        </table>
+        <!-- END CARD -->
+
+      </td>
+    </tr>
+  </table>
+
+</body>
+</html>`;
 }
 
 async function sendEsimEmail({
@@ -135,18 +242,18 @@ async function sendEsimEmail({
     ? `Your eSIM QR code (Order #${orderId})`
     : "Your eSIM QR code";
 
-  const html = formatEsimEmailHtml({
-    firstName,
-    activationCode,
-    manualCode,
-    smdpAddress,
-    apn,
-    planName,
-    country,
-    validityDays,
-    dataQuotaMb,
-    iccid
-    });
+const html = formatEsimEmailHtml({
+  firstName,
+  planName,
+  country,
+  validityDays,
+  dataQuotaMb,
+  iccid,
+  activationCode,
+  manualCode,
+  smdpAddress,
+  apn,
+});
 
   const result = await resend.emails.send({
     from: emailFrom,
