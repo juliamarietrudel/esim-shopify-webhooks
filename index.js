@@ -12,6 +12,7 @@ import {
   markOrderProcessed,
   getMayaCustomerIdFromShopifyCustomer,
   saveMayaCustomerIdToShopifyCustomer,
+  saveEsimToOrder,
 } from "./services/shopify.js";
 
 import {
@@ -757,6 +758,21 @@ app.post("/webhooks/order-paid", async (req, res) => {
           smdp_address: mayaResp?.esim?.smdp_address,
           apn: mayaResp?.esim?.apn,
         });
+        try {
+            await saveEsimToOrder(orderId, {
+                iccid: mayaResp?.esim?.iccid,
+                esimUid: mayaResp?.esim?.uid,
+            });
+            console.log("✅ Saved eSIM info to Shopify order:", {
+                orderId,
+                iccid: mayaResp?.esim?.iccid,
+                esimUid: mayaResp?.esim?.uid,
+            });
+            } catch (e) {
+            console.error("❌ Failed to save eSIM info to Shopify order:", e?.message || e);
+            shouldMarkProcessed = false;
+            // Pas “critique” si tu veux, mais pour l’alerte 75% ça devient important
+            }
 
         try {
           await sendEsimEmail({

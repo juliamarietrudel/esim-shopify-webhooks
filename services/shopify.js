@@ -14,6 +14,29 @@ export function shopifyGraphqlUrl() {
   return `https://${shop}/admin/api/${version}/graphql.json`;
 }
 
+export async function shopifyGraphql(query, variables = {}) {
+  const url = shopifyGraphqlUrl();
+  const token = shopifyToken();
+
+  const resp = await safeFetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": token,
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+
+  const json = await parseJsonSafe(resp);
+
+  if (!resp.ok || json?.errors) {
+    console.error("❌ Shopify GraphQL error:", json.errors || json);
+    throw new Error(`Shopify GraphQL failed (${resp.status})`);
+  }
+
+  return json;
+}
+
 function shopifyToken() {
   const token = process.env.API_ACCESS_TOKEN;
   if (!token) throw new Error("Missing API_ACCESS_TOKEN env var");
@@ -227,6 +250,57 @@ export async function markOrderProcessed(orderId) {
   if (!resp.ok || json.errors) {
     console.error("❌ Shopify markOrderProcessed error:", json.errors || json);
     throw new Error(`Shopify GraphQL failed (${resp.status})`);
+  }
+
+  return true;
+}
+
+// ---------- Order eSIM details metafields (for usage tracking) ----------
+export async function saveEsimToOrder(orderId, { iccid, esimUid } = {}) {
+  if (!orderId) throw new Error("saveEsimToOrder: missing orderId");
+
+  const gid = `gid://shopify/Order/${orderId}`;
+
+  const metafields = [];
+
+  if (iccid) {
+    metafields.push({
+      ownerId: gid,
+      namespace: "custom",
+      key: "maya_iccid",
+      type: "single_line_text_field",
+      value: String(iccid),
+    });
+  }
+
+  if (esimUid) {
+    metafields.push({
+      ownerId: gid,
+      namespace: "custom",
+      key: "maya_esim_uid",
+      type: "single_line_text_field",
+      value: String(esimUid),
+    });
+  }
+
+  if (!metafields.length) return true;
+
+  const mutation = `
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        userErrors { field message }
+      }
+    }
+  `;
+
+  const variables = { metafields };
+
+  const json = await shopifyGraphql(mutation, variables);
+
+  const userErrors = json?.data?.metafieldsSet?.userErrors || [];
+  if (userErrors.length) {
+    console.error("❌ Shopify saveEsimToOrder userErrors:", { orderId, userErrors });
+    throw new Error(userErrors[0]?.message || "Failed to write Shopify order metafields");
   }
 
   return true;
