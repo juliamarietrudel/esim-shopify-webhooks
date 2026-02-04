@@ -246,11 +246,11 @@ async function sendEsimEmail({
   }
 
   const qrBase64 = await generateQrPngBase64(activationCode);
-  const qrDataUrl = `data:image/png;base64,${qrBase64}`;
   if (!qrBase64) {
     console.warn("⚠️ Failed to generate QR code.");
     return false;
   }
+  const qrDataUrl = `data:image/png;base64,${qrBase64}`;
 
   const subject = orderId
     ? `Your eSIM QR code (Order #${orderId})`
@@ -267,6 +267,7 @@ const html = formatEsimEmailHtml({
   manualCode,
   smdpAddress,
   apn,
+  qrDataUrl,
 });
 
   const result = await resend.emails.send({
@@ -749,7 +750,6 @@ app.post("/webhooks/order-paid", async (req, res) => {
             iccid: mayaResp?.esim?.iccid,      // 👈 utile pour support
             // optionnel:
             country: item.title,
-            qrDataUrl,
           });
         } catch (e) {
           // Email failure shouldn't re-run Maya provisioning (but you may want admin alert)
