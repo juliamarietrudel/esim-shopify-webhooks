@@ -117,7 +117,12 @@ async function sendEsimEmail({ to, firstName, orderId, activationCode, manualCod
     manualCode,
     smdpAddress,
     apn,
-  });
+    planName,
+    country,
+    validityDays,
+    dataQuotaMb,
+    iccid
+    });
 
   const result = await resend.emails.send({
     from: emailFrom,
@@ -595,6 +600,10 @@ app.post("/webhooks/order-paid", async (req, res) => {
             manualCode: mayaResp?.esim?.manual_code,
             smdpAddress: mayaResp?.esim?.smdp_address,
             apn: mayaResp?.esim?.apn,
+            planName: item.variant_title,      // 👈 tu l’as déjà dans Shopify
+            iccid: mayaResp?.esim?.iccid,      // 👈 utile pour support
+            // optionnel:
+            country: item.title,
           });
         } catch (e) {
           // Email failure shouldn't re-run Maya provisioning (but you may want admin alert)
