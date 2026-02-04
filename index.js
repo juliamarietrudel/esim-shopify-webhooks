@@ -48,7 +48,18 @@ async function generateQrPngBase64(payload) {
   return pngBuffer.toString("base64");
 }
 
-function formatEsimEmailHtml({ firstName, activationCode, manualCode, smdpAddress, apn }) {
+function formatEsimEmailHtml({
+  firstName,
+  activationCode,
+  manualCode,
+  smdpAddress,
+  apn,
+  planName,
+  country,
+  validityDays,
+  dataQuotaMb,
+  iccid,
+}) {
   const safeName = (firstName || "").trim() || "there";
   const safeApn = apn ? `<li><b>APN</b>: ${apn}</li>` : "";
 
@@ -87,7 +98,20 @@ function formatEsimEmailHtml({ firstName, activationCode, manualCode, smdpAddres
   `;
 }
 
-async function sendEsimEmail({ to, firstName, orderId, activationCode, manualCode, smdpAddress, apn }) {
+async function sendEsimEmail({
+  to,
+  firstName,
+  orderId,
+  activationCode,
+  manualCode,
+  smdpAddress,
+  apn,
+  planName,
+  country,
+  validityDays,
+  dataQuotaMb,
+  iccid,
+}) {
   if (!emailEnabled) {
     console.log("ℹ️ Skipping email send (email not configured).");
     return false;
