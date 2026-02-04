@@ -305,3 +305,72 @@ export async function saveEsimToOrder(orderId, { iccid, esimUid } = {}) {
 
   return true;
 }
+
+// ---------- Find orders that have eSIMs saved (maya_iccid) ----------
+export async function getOrdersWithEsims({ daysBack = 120 } = {}) {
+  const sinceDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000)
+  .toISOString()
+  .slice(0, 10); // YYYY-MM-DD
+
+  const searchQuery = `created_at:>='${sinceDate}' metafield:custom.maya_iccid`;
+
+  const query = `
+    query OrdersWithEsims($first: Int!, $query: String!) {
+      orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
+        edges {
+          node {
+            id
+            name
+            email
+            customer {
+              firstName
+              lastName
+            }
+            billingAddress {
+              firstName
+              lastName
+            }
+            shippingAddress {
+              firstName
+              lastName
+            }
+            mayaIccid: metafield(namespace: "custom", key: "maya_iccid") { value }
+            mayaEsimUid: metafield(namespace: "custom", key: "maya_esim_uid") { value }
+          }
+        }
+      }
+    }
+  `;
+
+  const json = await shopifyGraphql(query, { first: 100, query: searchQuery });
+
+  const edges = json?.data?.orders?.edges || [];
+
+  return edges
+    .map(({ node }) => {
+      const orderGid = node?.id || "";
+      const orderId = orderGid.split("/").pop(); // gid://shopify/Order/123 -> "123"
+
+      const email = (node?.email || "").trim() || "";
+
+      const firstName =
+        (node?.customer?.firstName || "").trim() ||
+        (node?.billingAddress?.firstName || "").trim() ||
+        (node?.shippingAddress?.firstName || "").trim() ||
+        "";
+
+      const lastName =
+        (node?.customer?.lastName || "").trim() ||
+        (node?.billingAddress?.lastName || "").trim() ||
+        (node?.shippingAddress?.lastName || "").trim() ||
+        "";
+
+      const iccid = (node?.mayaIccid?.value || "").trim();
+      const esimUid = (node?.mayaEsimUid?.value || "").trim();
+
+      if (!orderId || !iccid) return null;
+
+      return { orderId, email, firstName, lastName, iccid, esimUid };
+    })
+    .filter(Boolean);
+}

@@ -13,6 +13,7 @@ import {
   getMayaCustomerIdFromShopifyCustomer,
   saveMayaCustomerIdToShopifyCustomer,
   saveEsimToOrder,
+  getOrdersWithEsims,
 } from "./services/shopify.js";
 
 import {
@@ -345,8 +346,23 @@ app.get("/cron/check-usage", async (req, res) => {
 
   console.log("🕒 CRON check-usage triggered:", new Date().toISOString());
 
-  // TODO: later we'll run the real usage-check logic here
-  return res.status(200).send("OK (cron stub)");
+  try {
+    const orders = await getOrdersWithEsims({ daysBack: 365 });
+    console.log("✅ Orders with eSIMs found:", orders.length);
+    console.log(orders.slice(0, 5));
+
+    return res.status(200).json({
+      ok: true,
+      count: orders.length,
+      sample: orders.slice(0, 5),
+    });
+  } catch (e) {
+    console.error("❌ Cron check-usage failed:", e?.message || e);
+    return res.status(500).json({
+      ok: false,
+      error: e?.message || String(e),
+    });
+  }
 });
 // -----------------------------
 // Small helpers
