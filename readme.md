@@ -2,35 +2,32 @@
 echo -n 'API_KEY:API_SECRET' | base64
 
 <!-- TYPE OF API -->
-  use connectivity rather than partners urls
-
+use connectivity rather than partners urls
 
 <!-- REQUEST WITH AUTHENTICATION -->
 <!-- get all products -->
 curl --request GET \
   --url 'https://api.maya.net/connectivity/v1/account/products' \
   --header 'Accept: application/json' \
-  --header 'Authorization: Basic YjY4RWdDQjJLOVc5OmdscVBYcWVWcFk2bUVZTWZvMXJhSHlBR2JsdHhoT1N5TjdmdFJpNXc2UUxBRE1oc2NrM25IWFdydUpCdldLODM='
-
+  --header 'Authorization: Basic <BASIC_AUTH_BASE64>'
 
 <!-- get customer info (for customer with id: ZMPSHYKZEEUF) -->
 curl --request GET \
   --url 'https://api.maya.net/connectivity/v1/customer/9vFm72RchXf3' \
   --header 'Accept: application/json' \
-  --header 'Authorization: Basic YjY4RWdDQjJLOVc5OmdscVBYcWVWcFk2bUVZTWZvMXJhSHlBR2JsdHhoT1N5TjdmdFJpNXc2UUxBRE1oc2NrM25IWFdydUpCdldLODM='
-
+  --header 'Authorization: Basic <BASIC_AUTH_BASE64>'
 
 <!-- get esim information (for esim with id: 891030000003436056) -->
 curl --request GET \
   --url 'https://api.maya.net/connectivity/v1/esim/8910300000049992500' \
   --header 'Accept: application/json' \
-  --header 'Authorization: Basic YjY4RWdDQjJLOVc5OmdscVBYcWVWcFk2bUVZTWZvMXJhSHlBR2JsdHhoT1N5TjdmdFJpNXc2UUxBRE1oc2NrM25IWFdydUpCdldLODM='
+  --header 'Authorization: Basic <BASIC_AUTH_BASE64>'
 
 <!-- get plan details -->
 curl --request GET \
   --url 'https://api.maya.net/connectivity/v1/esim/8910300000049992500/plan/6PETHX8CQ6Z0' \
   --header 'Accept: application/json' \
-  --header 'Authorization: Basic YjY4RWdDQjJLOVc5OmdscVBYcWVWcFk2bUVZTWZvMXJhSHlBR2JsdHhoT1N5TjdmdFJpNXc2UUxBRE1oc2NrM25IWFdydUpCdldLODM='
+  --header 'Authorization: Basic <BASIC_AUTH_BASE64>'
 
 
 <!-- STEPS -->
@@ -183,8 +180,6 @@ Since you don’t want user accounts, you can still offer:
 	•	“Send me my eSIMs” form (email)
 	•	Magic link to list their past eSIMs/top-ups (tokenized link)
 	•	This makes top-up UX much easier and reduces support.
-
-
 
 
 SUMMARY

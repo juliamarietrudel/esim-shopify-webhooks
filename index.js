@@ -3,6 +3,7 @@ import express from "express";
 import crypto from "crypto";
 import QRCode from "qrcode";
 import { Resend } from "resend";
+import "dotenv/config";
 
 // import { safeFetch } from "./utils/http.js"; // (unused right now) you can remove
 

@@ -12,16 +12,16 @@ export async function getMayaEsimDetailsByIccid(iccid) {
   const iccidStr = String(iccid || "").trim();
   if (!iccidStr) throw new Error("getMayaEsimDetailsByIccid: missing iccid");
 
-  const resp = await safeFetch(
-    `${mayaBaseUrl()}/connectivity/v1/esim/${encodeURIComponent(iccidStr)}`,
-    {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        Authorization: mayaAuthHeader(),
-      },
-    }
-  );
+  const url = `${mayaBaseUrl()}/connectivity/v1/esim/${encodeURIComponent(iccidStr)}`;
+  console.log("🌐 Maya GET eSIM URL:", url);
+
+  const resp = await safeFetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: mayaAuthHeader(),
+    },
+  });
 
   const data = await parseJsonSafe(resp);
 
@@ -35,7 +35,10 @@ export async function getMayaEsimDetailsByIccid(iccid) {
 }
 
 function mayaBaseUrl() {
-  return (process.env.MAYA_BASE_URL || "https://api.maya.net").trim();
+  const base = (process.env.MAYA_BASE_URL || "https://api.maya.net").trim();
+  // Debug: confirm which Maya host is being used in the running environment
+  console.log("🌐 MAYA_BASE_URL =", base);
+  return base;
 }
 
 async function parseJsonSafe(resp) {
@@ -43,7 +46,10 @@ async function parseJsonSafe(resp) {
 }
 
 export async function getMayaCustomerDetails(mayaCustomerId) {
-  const resp = await safeFetch(`${mayaBaseUrl()}/connectivity/v1/customer/${mayaCustomerId}`, {
+  const url = `${mayaBaseUrl()}/connectivity/v1/customer/${mayaCustomerId}`;
+  console.log("🌐 Maya GET customer URL:", url);
+
+  const resp = await safeFetch(url, {
     method: "GET",
     headers: {
       Accept: "application/json",
@@ -62,18 +68,18 @@ export async function getMayaCustomerDetails(mayaCustomerId) {
 }
 
 export async function createMayaTopUp({ iccid, planTypeId, tag = "" }) {
-  const resp = await safeFetch(
-    `${mayaBaseUrl()}/connectivity/v1/esim/${iccid}/plan/${planTypeId}`,
-    {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        Authorization: mayaAuthHeader(),
-      },
-      body: JSON.stringify(tag ? { tag } : {}),
-    }
-  );
+  const url = `${mayaBaseUrl()}/connectivity/v1/esim/${iccid}/plan/${planTypeId}`;
+  console.log("🌐 Maya POST top-up URL:", url);
+
+  const resp = await safeFetch(url, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: mayaAuthHeader(),
+    },
+    body: JSON.stringify(tag ? { tag } : {}),
+  });
 
   const data = await parseJsonSafe(resp);
 
@@ -94,7 +100,10 @@ export async function createMayaCustomer({ email, firstName, lastName, countryIs
     ...(tag ? { tag } : {}),
   };
 
-  const resp = await safeFetch(`${mayaBaseUrl()}/connectivity/v1/customer/`, {
+  const url = `${mayaBaseUrl()}/connectivity/v1/customer/`;
+  console.log("🌐 Maya POST create customer URL:", url);
+
+  const resp = await safeFetch(url, {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -127,7 +136,10 @@ export async function createMayaEsim({ planTypeId, customerId, tag = "" }) {
     ...(tag ? { tag } : {}),
   };
 
-  const resp = await safeFetch(`${mayaBaseUrl()}/connectivity/v1/esim`, {
+  const url = `${mayaBaseUrl()}/connectivity/v1/esim`;
+  console.log("🌐 Maya POST create eSIM URL:", url);
+
+  const resp = await safeFetch(url, {
     method: "POST",
     headers: {
       Accept: "application/json",
