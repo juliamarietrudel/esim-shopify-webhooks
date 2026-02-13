@@ -22,7 +22,8 @@ import {
   createMayaEsim,
   getMayaCustomerDetails,
   createMayaTopUp,
-  getMayaEsimDetailsByIccid, // ✅ needed for cron
+  getMayaEsimDetailsByIccid,
+  getMayaEsimPlansByIccid,
 } from "./services/maya.js";
 
 const app = express();
@@ -332,26 +333,54 @@ app.get("/cron/check-usage", async (req, res) => {
     for (const o of orders) {
       const { orderId, iccid } = o;
       console.log(`\n🔎 Checking usage for order ${orderId} — ICCID: ${iccid}`);
+      console.log("🔎 ABOUT TO FETCH ICCID:", iccid);
 
-      const esim = await getMayaEsimDetailsByIccid(iccid);
+      let esim = null;
+      try {
+        esim = await getMayaEsimDetailsByIccid(iccid);
+      } catch (e) {
+        console.warn(`⚠️ Maya lookup failed for ICCID ${iccid}:`, e?.message || e);
+        continue; // keep checking the other orders
+      }
       if (!esim) {
         console.warn(`⚠️ No eSIM found in Maya for ICCID ${iccid}`);
         continue;
       }
+      console.log("🧩 esim keys:", Object.keys(esim || {}));
+      console.log("🧩 esim.plans exists?", Array.isArray(esim?.plans), "length:", esim?.plans?.length);
 
-      const plans = Array.isArray(esim.plans) ? esim.plans : [];
-      const activePlan = plans[0]; // TODO: better plan selection later
+      if (esim?.plans?.length) {
+        console.log("🧩 first plan keys:", Object.keys(esim.plans[0] || {}));
+        console.log("🧩 first plan sample:", esim.plans[0]);
+      }
 
-      if (!activePlan) {
-        console.warn(`⚠️ No active plan found for ICCID ${iccid}`);
+      // optional: sometimes the payload is nested
+      if (esim?.esim) {
+        console.log("🧩 esim.esim keys:", Object.keys(esim.esim || {}));
+        console.log("🧩 esim.esim.plans length:", esim?.esim?.plans?.length);
+      }
+
+      let plans = [];
+      try {
+        plans = await getMayaEsimPlansByIccid(iccid);
+      } catch (e) {
+        console.warn(`⚠️ Maya plans lookup failed for ICCID ${iccid}:`, e?.message || e);
         continue;
       }
 
-      const totalBytes = Number(activePlan.data_bytes_total || 0);
+      console.log("📦 Plans found:", plans.length);
+
+      const activePlan = plans[0]; // we’ll improve selection later, for now just log
+      if (!activePlan) {
+        console.warn(`⚠️ No plans attached to ICCID ${iccid}`);
+        continue;
+      }
+
+      const totalBytes = Number(activePlan.data_quota_bytes || 0);
       const remainingBytes = Number(activePlan.data_bytes_remaining || 0);
 
-      if (!totalBytes || totalBytes <= 0) {
-        console.warn(`⚠️ Invalid data quota for ICCID ${iccid}`);
+      if (!activePlan) {
+        console.warn(`⚠️ No active plan found for ICCID ${iccid}`);
         continue;
       }
 

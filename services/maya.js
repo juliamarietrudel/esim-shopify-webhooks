@@ -34,6 +34,33 @@ export async function getMayaEsimDetailsByIccid(iccid) {
   return data?.esim || null;
 }
 
+// ✅ READ: eSIM plans + usage by ICCID
+export async function getMayaEsimPlansByIccid(iccid) {
+  const iccidStr = String(iccid || "").trim();
+  if (!iccidStr) throw new Error("getMayaEsimPlansByIccid: missing iccid");
+
+  const url = `${mayaBaseUrl()}/connectivity/v1/esim/${encodeURIComponent(iccidStr)}/plans`;
+  console.log("🌐 Maya GET eSIM PLANS URL:", url);
+
+  const resp = await safeFetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: mayaAuthHeader(),
+    },
+  });
+
+  const data = await parseJsonSafe(resp);
+
+  if (!resp.ok) {
+    console.error("❌ Maya get eSIM plans failed:", resp.status, data);
+    throw new Error(`Maya get eSIM plans failed (${resp.status})`);
+  }
+
+  // expected: { plans: [...] }
+  return Array.isArray(data?.plans) ? data.plans : [];
+}
+
 function mayaBaseUrl() {
   const base = (process.env.MAYA_BASE_URL || "https://api.maya.net").trim();
   // Debug: confirm which Maya host is being used in the running environment
