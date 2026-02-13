@@ -29,6 +29,14 @@ import {
 const app = express();
 
 // -----------------------------
+// Usage alert settings (CRON)
+// -----------------------------
+const USAGE_ALERT_THRESHOLD_PERCENT = Number(process.env.USAGE_ALERT_THRESHOLD_PERCENT || 20);
+// In-memory de-dupe so we don't email every cron run while the server stays up.
+// NOTE: if the server restarts, this resets. For true "send once" you should persist a flag in Shopify metafields.
+const usageAlertSentKeys = new Set();
+
+// -----------------------------
 // Email (Resend)
 // -----------------------------
 const resendApiKey = (process.env.RESEND_API_KEY || "").trim();
@@ -279,6 +287,66 @@ async function sendEsimEmail({
   return true;
 }
 
+async function sendUsageAlertEmail({
+  to,
+  firstName,
+  orderId,
+  percentUsed,
+  thresholdPercent,
+  iccid,
+  planId,
+}) {
+  if (!emailEnabled) {
+    console.log("ℹ️ Skipping usage alert email (email not configured).");
+    return false;
+  }
+  if (!to) {
+    console.warn("⚠️ No recipient email; cannot send usage alert email.");
+    return false;
+  }
+
+  const safeName = (firstName || "").trim() || "there";
+  const subject = orderId
+    ? `Data usage alert (Order #${orderId})`
+    : "Data usage alert";
+
+  const html = `
+    <div style="margin:0; padding:0; background:#F6FAFD; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial; color:#0F172A;">
+      <div style="max-width:640px; margin:0 auto; padding:24px;">
+        <div style="background:#FFFFFF; border:1px solid #E5E7EB; border-radius:16px; padding:22px;">
+          <h2 style="margin:0 0 12px; font-size:18px;">Hi ${esc(safeName)} 👋</h2>
+          <p style="margin:0 0 12px; font-size:14px; color:#334155;">
+            You’ve used more than <b>${thresholdPercent}%</b> of your data.
+          </p>
+          <p style="margin:0 0 12px; font-size:14px; color:#334155;">
+            Current usage: <b>${percentUsed}%</b>
+          </p>
+          ${iccid ? `<p style="margin:0 0 6px; font-size:12px; color:#64748B;"><b>ICCID</b>: ${esc(iccid)}</p>` : ""}
+          ${planId ? `<p style="margin:0 0 6px; font-size:12px; color:#64748B;"><b>Plan ID</b>: ${esc(planId)}</p>` : ""}
+          <p style="margin:14px 0 0; font-size:12px; color:#64748B;">
+            Need more data? You can purchase a top-up anytime.
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const result = await resend.emails.send({
+    from: emailFrom,
+    to,
+    subject,
+    html,
+  });
+
+  if (result?.error) {
+    console.error("❌ Resend usage alert error:", result.error);
+    return false;
+  }
+
+  console.log("✅ Usage alert email sent via Resend:", { to, id: result?.data?.id });
+  return true;
+}
+
 async function sendAdminAlertEmail({ subject, html }) {
   const to = (process.env.ALERT_EMAIL_TO || "").trim();
   if (!emailEnabled || !to) {
@@ -331,7 +399,7 @@ app.get("/cron/check-usage", async (req, res) => {
     console.log("✅ Orders with eSIMs found:", orders.length);
 
     for (const o of orders) {
-      const { orderId, iccid } = o;
+      const { orderId, iccid, email, firstName } = o;
       console.log(`\n🔎 Checking usage for order ${orderId} — ICCID: ${iccid}`);
       console.log("🔎 ABOUT TO FETCH ICCID:", iccid);
 
@@ -370,7 +438,43 @@ app.get("/cron/check-usage", async (req, res) => {
 
       console.log("📦 Plans found:", plans.length);
 
-      const activePlan = plans[0]; // we’ll improve selection later, for now just log
+      console.log(
+        "🧾 plans snapshot:",
+        plans.map((p) => ({
+          id: p.id,
+          quota: p.data_quota_bytes,
+          remaining: p.data_bytes_remaining,
+          activated: p.date_activated,
+          start: p.start_time,
+          end: p.end_time,
+          net: p.network_status,
+        }))
+      );
+
+      // Optional: per-plan debug output
+      for (const p of plans) {
+        const pTotalBytes = Number(p.data_quota_bytes || 0);
+        const pRemainingBytes = Number(p.data_bytes_remaining || 0);
+        const pUsedBytes = pTotalBytes - pRemainingBytes;
+        const pPercentUsed = pTotalBytes > 0 ? Math.round((pUsedBytes / pTotalBytes) * 100) : null;
+
+        console.log("📊 plan usage", {
+          orderId,
+          iccid,
+          planId: p.id,
+          totalBytes: pTotalBytes,
+          remainingBytes: pRemainingBytes,
+          percentUsed: pPercentUsed === null ? "n/a" : `${pPercentUsed}%`,
+          activated: p.date_activated,
+          net: p.network_status,
+          start: p.start_time,
+          end: p.end_time,
+        });
+      }
+
+      // Pick the plan we consider the "current" one for alerting
+      const activePlan = pickCurrentPlan(plans);
+
       if (!activePlan) {
         console.warn(`⚠️ No plans attached to ICCID ${iccid}`);
         continue;
@@ -379,8 +483,8 @@ app.get("/cron/check-usage", async (req, res) => {
       const totalBytes = Number(activePlan.data_quota_bytes || 0);
       const remainingBytes = Number(activePlan.data_bytes_remaining || 0);
 
-      if (!activePlan) {
-        console.warn(`⚠️ No active plan found for ICCID ${iccid}`);
+      if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
+        console.warn(`⚠️ Invalid data quota for ICCID ${iccid}`);
         continue;
       }
 
@@ -390,10 +494,52 @@ app.get("/cron/check-usage", async (req, res) => {
       console.log({
         orderId,
         iccid,
+        activePlanId: activePlan.id,
         totalBytes,
         remainingBytes,
         percentUsed: `${percentUsed}%`,
+        activated: activePlan.date_activated,
+        net: activePlan.network_status,
+        start: activePlan.start_time,
+        end: activePlan.end_time,
       });
+
+      // -----------------------------
+      // Usage alert (send once per server lifetime)
+      // -----------------------------
+      const threshold = Number.isFinite(USAGE_ALERT_THRESHOLD_PERCENT)
+        ? USAGE_ALERT_THRESHOLD_PERCENT
+        : 20;
+
+      if (Number.isFinite(percentUsed) && percentUsed >= threshold) {
+        const dedupeKey = `${orderId}:${iccid}:${threshold}`;
+
+        if (usageAlertSentKeys.has(dedupeKey)) {
+          console.log(`ℹ️ Usage alert already sent for ${dedupeKey}, skipping.`);
+        } else {
+          if (!email) {
+            console.warn(
+              `⚠️ Usage alert triggered (${percentUsed}%) but order is missing email. ` +
+                `Update getOrdersWithEsims() to return { email, firstName } for order ${orderId}.`
+            );
+          } else {
+            try {
+              await sendUsageAlertEmail({
+                to: email,
+                firstName,
+                orderId,
+                percentUsed,
+                thresholdPercent: threshold,
+                iccid,
+                planId: activePlan?.id,
+              });
+              usageAlertSentKeys.add(dedupeKey);
+            } catch (e) {
+              console.error("❌ Failed to send usage alert email:", e?.message || e);
+            }
+          }
+        }
+      }
     }
 
     return res.status(200).json({ ok: true, count: orders.length });
@@ -431,6 +577,47 @@ function pickBuyerFromOrder(order) {
     "US";
 
   return { email, firstName, lastName, countryIso2 };
+}
+
+function pickCurrentPlan(plans) {
+  if (!Array.isArray(plans) || plans.length === 0) return null;
+
+  const isActivated = (p) => {
+    const da = String(p?.date_activated || "");
+    return da && da !== "0000-00-00 00:00:00";
+  };
+
+  const isActiveNet = (p) => {
+    const ns = String(p?.network_status || "").toUpperCase();
+    // Maya examples you've seen: ACTIVE / NOT_ACTIVE
+    return ns === "ACTIVE" || ns === "ENABLED";
+  };
+
+  const withRemaining = (arr) =>
+    arr.filter((p) => Number(p?.data_bytes_remaining || 0) > 0);
+
+  // Priority pools (highest to lowest)
+  const pools = [
+    // Activated + network ACTIVE first
+    withRemaining(plans.filter((p) => isActivated(p) && isActiveNet(p))),
+    // Activated (even if network status isn't ACTIVE)
+    withRemaining(plans.filter((p) => isActivated(p))),
+    // Anything with remaining data
+    withRemaining(plans),
+    // Fallback: any plan
+    plans,
+  ];
+
+  const pool = pools.find((p) => p.length > 0) || plans;
+
+  // newest start_time wins
+  const sorted = [...pool].sort((a, b) => {
+    const ta = Date.parse(String(a?.start_time || "")) || 0;
+    const tb = Date.parse(String(b?.start_time || "")) || 0;
+    return tb - ta;
+  });
+
+  return sorted[0] || null;
 }
 
 // -----------------------------
