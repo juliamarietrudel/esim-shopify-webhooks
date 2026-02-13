@@ -255,6 +255,83 @@ export async function markOrderProcessed(orderId) {
   return true;
 }
 
+// ---------- Order eSIM list (JSON) ----------
+const ESIMS_JSON_KEY = "maya_esims_json";
+
+export async function getEsimsJsonFromOrder(orderId) {
+  const gid = `gid://shopify/Order/${orderId}`;
+
+  const query = `
+    query GetEsimsJson($id: ID!) {
+      order(id: $id) {
+        esims: metafield(namespace: "custom", key: "${ESIMS_JSON_KEY}") { value }
+      }
+    }
+  `;
+
+  const json = await shopifyGraphql(query, { id: gid });
+  const raw = json?.data?.order?.esims?.value;
+
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function appendEsimToOrderEsimsJson(orderId, { iccid, uid } = {}) {
+  if (!orderId) throw new Error("appendEsimToOrderEsimsJson: missing orderId");
+  if (!iccid && !uid) return true;
+
+  const gid = `gid://shopify/Order/${orderId}`;
+
+  const current = await getEsimsJsonFromOrder(orderId);
+
+  const cleanIccid = String(iccid || "").trim();
+  const cleanUid = String(uid || "").trim();
+
+  // avoid duplicates (by iccid if present, else by uid)
+  const exists = current.some((e) => {
+    const eIccid = String(e?.iccid || "").trim();
+    const eUid = String(e?.uid || "").trim();
+    if (cleanIccid) return eIccid === cleanIccid;
+    return cleanUid && eUid === cleanUid;
+  });
+
+  const next = exists
+    ? current
+    : [...current, { iccid: cleanIccid || null, uid: cleanUid || null }];
+
+  const mutation = `
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        userErrors { field message }
+      }
+    }
+  `;
+
+  const variables = {
+    metafields: [
+      {
+        ownerId: gid,
+        namespace: "custom",
+        key: ESIMS_JSON_KEY,
+        type: "multi_line_text_field",
+        value: JSON.stringify(next),
+      },
+    ],
+  };
+
+  const json = await shopifyGraphql(mutation, variables);
+  const userErrors = json?.data?.metafieldsSet?.userErrors || [];
+  if (userErrors.length) {
+    throw new Error(userErrors[0]?.message || "Failed to write maya_esims_json");
+  }
+
+  return true;
+}
 // ---------- Usage alert idempotency (stored in ONE order metafield) ----------
 // We store keys line-by-line in custom.usage_alerts_sent (multi_line_text_field)
 
@@ -403,16 +480,38 @@ export async function saveEsimToOrder(orderId, { iccid, esimUid } = {}) {
     throw new Error(userErrors[0]?.message || "Failed to write Shopify order metafields");
   }
 
+  // Also append to JSON list so we keep ALL eSIMs on the order
+  try {
+    await appendEsimToOrderEsimsJson(orderId, {
+      iccid,
+      uid: esimUid,
+    });
+  } catch (e) {
+    console.error("❌ Failed to append eSIM to maya_esims_json:", e?.message || e);
+  }
   return true;
 }
 
-// ---------- Find orders that have eSIMs saved (maya_iccid) ----------
+// ---------- Find orders that have eSIMs saved (maya_esims_json OR maya_iccid) ----------
+function parseEsimsJson(raw) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function getOrdersWithEsims({ daysBack = 120 } = {}) {
   const sinceDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000)
     .toISOString()
     .slice(0, 10); // YYYY-MM-DD
 
-  const searchQuery = `created_at:>='${sinceDate}' metafield:custom.maya_iccid`;
+  // Get orders that have either the new JSON list OR the old single field
+  const searchQuery =
+    `created_at:>='${sinceDate}' ` +
+    `(metafield:custom.${ESIMS_JSON_KEY} OR metafield:custom.maya_iccid)`;
 
   const query = `
     query OrdersWithEsims($first: Int!, $query: String!) {
@@ -422,20 +521,14 @@ export async function getOrdersWithEsims({ daysBack = 120 } = {}) {
             id
             name
             email
-            customer {
-              firstName
-              lastName
-            }
-            billingAddress {
-              firstName
-              lastName
-            }
-            shippingAddress {
-              firstName
-              lastName
-            }
+            customer { firstName lastName }
+            billingAddress { firstName lastName }
+            shippingAddress { firstName lastName }
+
             mayaIccid: metafield(namespace: "custom", key: "maya_iccid") { value }
             mayaEsimUid: metafield(namespace: "custom", key: "maya_esim_uid") { value }
+
+            esimsJson: metafield(namespace: "custom", key: "${ESIMS_JSON_KEY}") { value }
           }
         }
       }
@@ -443,13 +536,12 @@ export async function getOrdersWithEsims({ daysBack = 120 } = {}) {
   `;
 
   const json = await shopifyGraphql(query, { first: 100, query: searchQuery });
-
   const edges = json?.data?.orders?.edges || [];
 
   return edges
     .map(({ node }) => {
       const orderGid = node?.id || "";
-      const orderId = orderGid.split("/").pop(); // gid://shopify/Order/123 -> "123"
+      const orderId = orderGid.split("/").pop();
 
       const email = (node?.email || "").trim() || "";
 
@@ -465,12 +557,30 @@ export async function getOrdersWithEsims({ daysBack = 120 } = {}) {
         (node?.shippingAddress?.lastName || "").trim() ||
         "";
 
-      const iccid = (node?.mayaIccid?.value || "").trim();
-      const esimUid = (node?.mayaEsimUid?.value || "").trim();
+      const singleIccid = (node?.mayaIccid?.value || "").trim();
+      const singleUid = (node?.mayaEsimUid?.value || "").trim();
 
-      if (!orderId || !iccid) return null;
+      const esims = parseEsimsJson(node?.esimsJson?.value)
+        .map((e) => ({
+          iccid: String(e?.iccid || "").trim(),
+          uid: String(e?.uid || "").trim(),
+        }))
+        .filter((e) => e.iccid); // keep only entries with iccid
 
-      return { orderId, email, firstName, lastName, iccid, esimUid };
+      // Backward compatibility: if JSON empty but old field exists, use that
+      const finalEsims = esims.length
+        ? esims
+        : (singleIccid ? [{ iccid: singleIccid, uid: singleUid || "" }] : []);
+
+      if (!orderId || !finalEsims.length) return null;
+
+      return {
+        orderId,
+        email,
+        firstName,
+        lastName,
+        esims: finalEsims,      // ✅ NEW: list
+      };
     })
     .filter(Boolean);
 }

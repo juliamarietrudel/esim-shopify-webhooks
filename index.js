@@ -401,149 +401,105 @@ app.get("/cron/check-usage", async (req, res) => {
     console.log("✅ Orders with eSIMs found:", orders.length);
 
     for (const o of orders) {
-      const { orderId, iccid, email, firstName } = o;
-      console.log(`\n🔎 Checking usage for order ${orderId} — ICCID: ${iccid}`);
-      console.log("🔎 ABOUT TO FETCH ICCID:", iccid);
+      const { orderId, esims, email, firstName } = o;
 
-      let esim = null;
-      try {
-        esim = await getMayaEsimDetailsByIccid(iccid);
-      } catch (e) {
-        console.warn(`⚠️ Maya lookup failed for ICCID ${iccid}:`, e?.message || e);
-        continue; // keep checking the other orders
-      }
-      if (!esim) {
-        console.warn(`⚠️ No eSIM found in Maya for ICCID ${iccid}`);
-        continue;
-      }
-      console.log("🧩 esim keys:", Object.keys(esim || {}));
-      console.log("🧩 esim.plans exists?", Array.isArray(esim?.plans), "length:", esim?.plans?.length);
+      console.log(`\n🧾 Order ${orderId} — eSIMs found: ${esims.length}`);
 
-      if (esim?.plans?.length) {
-        console.log("🧩 first plan keys:", Object.keys(esim.plans[0] || {}));
-        console.log("🧩 first plan sample:", esim.plans[0]);
-      }
+      for (const e of esims) {
+        const iccid = e.iccid;
 
-      // optional: sometimes the payload is nested
-      if (esim?.esim) {
-        console.log("🧩 esim.esim keys:", Object.keys(esim.esim || {}));
-        console.log("🧩 esim.esim.plans length:", esim?.esim?.plans?.length);
-      }
+        console.log(`\n🔎 Checking usage for order ${orderId} — ICCID: ${iccid}`);
+        console.log("🔎 ABOUT TO FETCH ICCID:", iccid);
 
-      let plans = [];
-      try {
-        plans = await getMayaEsimPlansByIccid(iccid);
-      } catch (e) {
-        console.warn(`⚠️ Maya plans lookup failed for ICCID ${iccid}:`, e?.message || e);
-        continue;
-      }
-
-      console.log("📦 Plans found:", plans.length);
-
-      console.log(
-        "🧾 plans snapshot:",
-        plans.map((p) => ({
-          id: p.id,
-          quota: p.data_quota_bytes,
-          remaining: p.data_bytes_remaining,
-          activated: p.date_activated,
-          start: p.start_time,
-          end: p.end_time,
-          net: p.network_status,
-        }))
-      );
-
-      // Optional: per-plan debug output
-      for (const p of plans) {
-        const pTotalBytes = Number(p.data_quota_bytes || 0);
-        const pRemainingBytes = Number(p.data_bytes_remaining || 0);
-        const pUsedBytes = pTotalBytes - pRemainingBytes;
-        const pPercentUsed = pTotalBytes > 0 ? Math.round((pUsedBytes / pTotalBytes) * 100) : null;
-
-        console.log("📊 plan usage", {
-          orderId,
-          iccid,
-          planId: p.id,
-          totalBytes: pTotalBytes,
-          remainingBytes: pRemainingBytes,
-          percentUsed: pPercentUsed === null ? "n/a" : `${pPercentUsed}%`,
-          activated: p.date_activated,
-          net: p.network_status,
-          start: p.start_time,
-          end: p.end_time,
-        });
-      }
-
-      // Pick the plan we consider the "current" one for alerting
-      const activePlan = pickCurrentPlan(plans);
-
-      if (!activePlan) {
-        console.warn(`⚠️ No plans attached to ICCID ${iccid}`);
-        continue;
-      }
-
-      const totalBytes = Number(activePlan.data_quota_bytes || 0);
-      const remainingBytes = Number(activePlan.data_bytes_remaining || 0);
-
-      if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
-        console.warn(`⚠️ Invalid data quota for ICCID ${iccid}`);
-        continue;
-      }
-
-      const usedBytes = totalBytes - remainingBytes;
-      const percentUsed = Math.round((usedBytes / totalBytes) * 100);
-
-      console.log({
-        orderId,
-        iccid,
-        activePlanId: activePlan.id,
-        totalBytes,
-        remainingBytes,
-        percentUsed: `${percentUsed}%`,
-        activated: activePlan.date_activated,
-        net: activePlan.network_status,
-        start: activePlan.start_time,
-        end: activePlan.end_time,
-      });
-
-      // -----------------------------
-      // Usage alert (send once per server lifetime)
-      // -----------------------------
-      const threshold = Number.isFinite(USAGE_ALERT_THRESHOLD_PERCENT)
-        ? USAGE_ALERT_THRESHOLD_PERCENT
-        : 20;
-
-      if (Number.isFinite(percentUsed) && percentUsed >= threshold) {
-        const key = usageAlertKey(threshold, iccid);
-
-        let flag = { sent: false };
+        // (optional debug) Maya eSIM details call
+        let esim = null;
         try {
-          flag = await getUsageAlertFlag(orderId, key);
-        } catch (e) {
-          console.error("❌ Could not read usage alert flag:", e?.message || e);
+          esim = await getMayaEsimDetailsByIccid(iccid);
+        } catch (err) {
+          console.warn(`⚠️ Maya lookup failed for ICCID ${iccid}:`, err?.message || err);
+          continue;
+        }
+        if (!esim) {
+          console.warn(`⚠️ No eSIM found in Maya for ICCID ${iccid}`);
+          continue;
         }
 
-        if (flag.sent) {
-          console.log(`ℹ️ Usage alert already sent (Shopify metafield) for ${orderId}:${key}, skipping.`);
-        } else {
-          if (!email) {
-            console.warn(`⚠️ Usage alert triggered (${percentUsed}%) but order is missing email. Order ${orderId}`);
-          } else {
-            try {
-              await sendUsageAlertEmail({
-                to: email,
-                firstName,
-                orderId,
-                percentUsed,
-                thresholdPercent: threshold,
-                iccid,
-                planId: activePlan?.id,
-              });
+        let plans = [];
+        try {
+          plans = await getMayaEsimPlansByIccid(iccid);
+        } catch (err) {
+          console.warn(`⚠️ Maya plans lookup failed for ICCID ${iccid}:`, err?.message || err);
+          continue;
+        }
 
-              await markUsageAlertSent(orderId, key);
-              console.log(`✅ Marked usage alert as sent on Shopify for ${orderId}:${key}`);
-            } catch (e) {
-              console.error("❌ Failed to send/mark usage alert email:", e?.message || e);
+        console.log("📦 Plans found:", plans.length);
+
+        const activePlan = pickCurrentPlan(plans);
+        if (!activePlan) {
+          console.warn(`⚠️ No plans attached to ICCID ${iccid}`);
+          continue;
+        }
+
+        const totalBytes = Number(activePlan.data_quota_bytes || 0);
+        const remainingBytes = Number(activePlan.data_bytes_remaining || 0);
+
+        if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
+          console.warn(`⚠️ Invalid data quota for ICCID ${iccid}`);
+          continue;
+        }
+
+        const usedBytes = totalBytes - remainingBytes;
+        const percentUsed = Math.round((usedBytes / totalBytes) * 100);
+
+        console.log({
+          orderId,
+          iccid,
+          activePlanId: activePlan.id,
+          totalBytes,
+          remainingBytes,
+          percentUsed: `${percentUsed}%`,
+          activated: activePlan.date_activated,
+          net: activePlan.network_status,
+          start: activePlan.start_time,
+          end: activePlan.end_time,
+        });
+
+        const threshold = Number.isFinite(USAGE_ALERT_THRESHOLD_PERCENT)
+          ? USAGE_ALERT_THRESHOLD_PERCENT
+          : 20;
+
+        if (Number.isFinite(percentUsed) && percentUsed >= threshold) {
+          const key = usageAlertKey(threshold, iccid);
+
+          let flag = { sent: false };
+          try {
+            flag = await getUsageAlertFlag(orderId, key);
+          } catch (err) {
+            console.error("❌ Could not read usage alert flag:", err?.message || err);
+          }
+
+          if (flag.sent) {
+            console.log(`ℹ️ Usage alert already sent for ${orderId}:${key}, skipping.`);
+          } else {
+            if (!email) {
+              console.warn(`⚠️ Usage alert triggered (${percentUsed}%) but order is missing email. Order ${orderId}`);
+            } else {
+              try {
+                await sendUsageAlertEmail({
+                  to: email,
+                  firstName,
+                  orderId,
+                  percentUsed,
+                  thresholdPercent: threshold,
+                  iccid,
+                  planId: activePlan?.id,
+                });
+
+                await markUsageAlertSent(orderId, key);
+                console.log(`✅ Marked usage alert as sent on Shopify for ${orderId}:${key}`);
+              } catch (err) {
+                console.error("❌ Failed to send/mark usage alert email:", err?.message || err);
+              }
             }
           }
         }
