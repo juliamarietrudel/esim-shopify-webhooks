@@ -15,6 +15,9 @@ import {
   saveMayaCustomerIdToShopifyCustomer,
   saveEsimToOrder,
   getOrdersWithEsims,
+  usageAlertKey,
+  getUsageAlertFlag,
+  markUsageAlertSent,
 } from "./services/shopify.js";
 
 import {
@@ -34,7 +37,6 @@ const app = express();
 const USAGE_ALERT_THRESHOLD_PERCENT = Number(process.env.USAGE_ALERT_THRESHOLD_PERCENT || 20);
 // In-memory de-dupe so we don't email every cron run while the server stays up.
 // NOTE: if the server restarts, this resets. For true "send once" you should persist a flag in Shopify metafields.
-const usageAlertSentKeys = new Set();
 
 // -----------------------------
 // Email (Resend)
@@ -512,16 +514,20 @@ app.get("/cron/check-usage", async (req, res) => {
         : 20;
 
       if (Number.isFinite(percentUsed) && percentUsed >= threshold) {
-        const dedupeKey = `${orderId}:${iccid}:${threshold}`;
+        const key = usageAlertKey(threshold, iccid);
 
-        if (usageAlertSentKeys.has(dedupeKey)) {
-          console.log(`ℹ️ Usage alert already sent for ${dedupeKey}, skipping.`);
+        let flag = { sent: false };
+        try {
+          flag = await getUsageAlertFlag(orderId, key);
+        } catch (e) {
+          console.error("❌ Could not read usage alert flag:", e?.message || e);
+        }
+
+        if (flag.sent) {
+          console.log(`ℹ️ Usage alert already sent (Shopify metafield) for ${orderId}:${key}, skipping.`);
         } else {
           if (!email) {
-            console.warn(
-              `⚠️ Usage alert triggered (${percentUsed}%) but order is missing email. ` +
-                `Update getOrdersWithEsims() to return { email, firstName } for order ${orderId}.`
-            );
+            console.warn(`⚠️ Usage alert triggered (${percentUsed}%) but order is missing email. Order ${orderId}`);
           } else {
             try {
               await sendUsageAlertEmail({
@@ -533,9 +539,11 @@ app.get("/cron/check-usage", async (req, res) => {
                 iccid,
                 planId: activePlan?.id,
               });
-              usageAlertSentKeys.add(dedupeKey);
+
+              await markUsageAlertSent(orderId, key);
+              console.log(`✅ Marked usage alert as sent on Shopify for ${orderId}:${key}`);
             } catch (e) {
-              console.error("❌ Failed to send usage alert email:", e?.message || e);
+              console.error("❌ Failed to send/mark usage alert email:", e?.message || e);
             }
           }
         }

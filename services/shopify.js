@@ -255,6 +255,106 @@ export async function markOrderProcessed(orderId) {
   return true;
 }
 
+// ---------- Usage alert idempotency (stored in ONE order metafield) ----------
+// We store keys line-by-line in custom.usage_alerts_sent (multi_line_text_field)
+
+const USAGE_ALERTS_FIELD_KEY = "usage_alerts_sent";
+
+export function usageAlertKey(threshold, iccid) {
+  const t = String(threshold || "").trim();
+  const i = String(iccid || "").trim();
+  if (!t || !i) throw new Error("usageAlertKey: missing threshold or iccid");
+  // e.g. usage_alert_20_8910300000057318645
+  return `usage_alert_${t}_${i}`;
+}
+
+function parseUsageAlertsSent(value) {
+  return String(value || "")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+export async function getUsageAlertFlag(orderId, key) {
+  const gid = `gid://shopify/Order/${orderId}`;
+
+  const query = `
+    query UsageAlertSentList($id: ID!) {
+      order(id: $id) {
+        usageAlertsSent: metafield(namespace: "custom", key: "${USAGE_ALERTS_FIELD_KEY}") { value }
+      }
+    }
+  `;
+
+  const json = await shopifyGraphql(query, { id: gid });
+
+  const current = parseUsageAlertsSent(json?.data?.order?.usageAlertsSent?.value);
+  const sent = current.includes(String(key || "").trim());
+
+  return { sent, sentAt: null };
+}
+
+export async function markUsageAlertSent(orderId, key) {
+  const gid = `gid://shopify/Order/${orderId}`;
+  const k = String(key || "").trim();
+  if (!k) throw new Error("markUsageAlertSent: missing key");
+
+  // 1) read current list
+  let current = [];
+  try {
+    const flag = await getUsageAlertFlag(orderId, k);
+    // re-read the list (we need full list)
+    const query = `
+      query UsageAlertSentList($id: ID!) {
+        order(id: $id) {
+          usageAlertsSent: metafield(namespace: "custom", key: "${USAGE_ALERTS_FIELD_KEY}") { value }
+        }
+      }
+    `;
+    const json = await shopifyGraphql(query, { id: gid });
+    current = parseUsageAlertsSent(json?.data?.order?.usageAlertsSent?.value);
+    if (flag.sent) return true; // already present
+  } catch (e) {
+    // If read fails, we’ll still try writing just this key (better than doing nothing)
+    console.warn("⚠️ Could not read usage_alerts_sent before writing:", e?.message || e);
+    current = [];
+  }
+
+  // 2) append if missing
+  if (!current.includes(k)) current.push(k);
+
+  // 3) write back to ONE metafield
+  const mutation = `
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        userErrors { field message }
+      }
+    }
+  `;
+
+  const variables = {
+    metafields: [
+      {
+        ownerId: gid,
+        namespace: "custom",
+        key: USAGE_ALERTS_FIELD_KEY,
+        type: "multi_line_text_field",
+        value: current.join("\n"),
+      },
+    ],
+  };
+
+  const json = await shopifyGraphql(mutation, variables);
+
+  const userErrors = json?.data?.metafieldsSet?.userErrors || [];
+  if (userErrors.length) {
+    console.error("❌ Shopify markUsageAlertSent userErrors:", { orderId, key: k, userErrors });
+    throw new Error(userErrors[0]?.message || "Failed to write Shopify usage_alerts_sent metafield");
+  }
+
+  return true;
+}
+
 // ---------- Order eSIM details metafields (for usage tracking) ----------
 export async function saveEsimToOrder(orderId, { iccid, esimUid } = {}) {
   if (!orderId) throw new Error("saveEsimToOrder: missing orderId");
@@ -309,8 +409,8 @@ export async function saveEsimToOrder(orderId, { iccid, esimUid } = {}) {
 // ---------- Find orders that have eSIMs saved (maya_iccid) ----------
 export async function getOrdersWithEsims({ daysBack = 120 } = {}) {
   const sinceDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000)
-  .toISOString()
-  .slice(0, 10); // YYYY-MM-DD
+    .toISOString()
+    .slice(0, 10); // YYYY-MM-DD
 
   const searchQuery = `created_at:>='${sinceDate}' metafield:custom.maya_iccid`;
 
