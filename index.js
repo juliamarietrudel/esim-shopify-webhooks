@@ -83,26 +83,40 @@ function formatEsimEmailHtml({
   apn,
   qrDataUrl,
 }) {
-  const safeName = (firstName || "").trim() || "there";
+  const safeName = (firstName || "").trim() || "client(e)";
 
   const row = (label, value) =>
     value
-      ? `<tr><td style="padding:10px 0;"><b>${label}:</b> ${esc(value)}</td></tr>`
+      ? `<tr><td style="padding:10px 0;"><b>${label} :</b> ${esc(value)}</td></tr>`
       : "";
 
   const codeRow = (label, value) =>
     value
       ? `<tr>
           <td style="padding:10px 0;">
-            <b>${label}:</b>
-            <code style="background:#F1F5F9; padding:4px 8px; border-radius:6px;">
+            <b>${label} :</b>
+            <code style="background:#F1F5F9; padding:4px 8px; border-radius:6px; display:inline-block;">
               ${esc(value)}
             </code>
           </td>
         </tr>`
       : "";
 
-  const apnRow = apn ? `<tr><td style="padding:10px 0;"><b>APN:</b> ${esc(apn)}</td></tr>` : "";
+  const apnRow = apn ? `<tr><td style="padding:10px 0;"><b>APN :</b> ${esc(apn)}</td></tr>` : "";
+
+  // ✅ Remplace ces liens par tes URLs réelles
+  const links = {
+    iphone: "https://quebecesim.ca/pages/installation-esim-iphone",
+    samsung: "https://quebecesim.ca/pages/installation-esim-samsung",
+    pixel: "https://quebecesim.ca/pages/installation-esim-google-pixel",
+    ipad: "https://quebecesim.ca/pages/installation-esim-ipad",
+    conso: "https://quebecesim.ca/pages/comment-suivre-ma-consommation",
+    erreurs: "https://quebecesim.ca/pages/un-message-derreur-saffiche",
+    contact: "https://quebecesim.ca/pages/contactez-nous",
+  };
+
+  const bullet = (text) =>
+    `<li style="margin:10px 0; line-height:1.45; color:#334155; font-size:14px;">${text}</li>`;
 
   return `<!DOCTYPE html>
 <html lang="fr">
@@ -112,11 +126,9 @@ function formatEsimEmailHtml({
 </head>
 
 <body style="margin:0; padding:0; background:#F6FAFD; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Arial;">
-
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="padding: 32px 0;">
     <tr>
       <td align="center">
-
         <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"
           style="width:100%; max-width:800px; background:#FFFFFF; border-radius: 18px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); overflow:hidden;">
 
@@ -149,21 +161,24 @@ function formatEsimEmailHtml({
                 Votre eSIM est prête !
               </h1>
 
-              <p style="font-size: 15px; color:#334155; margin: 0 0 20px;">
+              <p style="font-size: 15px; color:#334155; margin: 0 0 14px;">
                 Bonjour <b>${esc(safeName)}</b>,
               </p>
 
-              <p style="font-size: 15px; color:#334155; margin: 0 0 28px;">
-                Votre eSIM pour <b style="color:#0CA3EC;">${esc(planName || "votre forfait")}</b> est maintenant prête.
-                Scannez le code QR ci-dessous pour l’installer sur votre appareil.
+              <p style="font-size: 15px; color:#334155; margin: 0 0 18px;">
+                Merci pour votre achat. Vous trouverez ci-dessous les informations nécessaires pour l’installation et l’activation de votre eSIM :
               </p>
 
-              <div style="height: 16px;"></div>
+              <ul style="margin:0 0 22px 18px; padding:0; color:#334155; font-size:14px;">
+                ${bullet("Votre code QR")}
+                ${bullet("Votre code d’activation manuel (iPhone et Android)")}
+                ${bullet("Les liens vers nos procédures d’installation")}
+              </ul>
 
               <h2 style="font-size: 16px; color:#0F172A; margin: 0 0 12px;">Détails du forfait</h2>
 
               <table width="100%" cellpadding="0" cellspacing="0" border="0"
-                style="background:#FFFFFF; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px; margin-bottom: 28px;">
+                style="background:#FFFFFF; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px; margin-bottom: 22px;">
                 ${row("Forfait", planName)}
                 ${row("Destination", country)}
                 ${row("Validité", validityDays ? `${validityDays} jours` : "")}
@@ -171,7 +186,7 @@ function formatEsimEmailHtml({
                 ${codeRow("ICCID", iccid)}
               </table>
 
-              <div style="text-align:center; margin: 20px 0 28px;">
+              <div style="text-align:center; margin: 18px 0 22px;">
                 <img 
                     src="${qrDataUrl}"
                     alt="Scanner pour installer l’eSIM"
@@ -184,41 +199,76 @@ function formatEsimEmailHtml({
               </div>
 
               <table width="100%" cellpadding="0" cellspacing="0" border="0"
-                style="background:#F8FAFC; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px; margin: 12px 0 28px;">
+                style="background:#F8FAFC; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px; margin: 12px 0 22px;">
                 <tr>
-                  <td style="font-size: 13px; color:#475569;">
-                    <b>Conseil&nbsp;:</b> Si vous utilisez le même téléphone, ouvrez ce courriel sur un autre appareil pour scanner le code QR.
+                  <td style="font-size: 13px; color:#475569; line-height:1.45;">
+                    <b>Conseil :</b> Si vous utilisez le même téléphone, ouvrez ce courriel sur un autre appareil pour scanner le code QR.
                   </td>
                 </tr>
               </table>
 
+              <h2 style="font-size: 16px; color:#0F172A; margin: 0 0 10px;">Recommandations importantes</h2>
+              <ul style="margin:0 0 18px 18px; padding:0;">
+                ${bullet("Il est préférable d’installer vos eSIM <b>avant votre départ</b>. Les forfaits débutent à la première connexion au réseau de destination. Si votre forfait inclut le Canada, celui-ci débutera le jour de l’installation.")}
+                ${bullet("Une connexion <b>Wi-Fi stable</b> est requise lors de l’installation (aucune installation possible sur le Wi-Fi d’un bateau de croisière).")}
+                ${bullet("Message d’erreur « eSIM non compatible » : votre appareil est probablement verrouillé par votre fournisseur. Veuillez le contacter pour le déverrouiller.")}
+                ${bullet(`Message d’erreur « Impossible d’activer l’eSIM » (iPhone) : votre eSIM est probablement bien installée. Consultez : <a href="${links.erreurs}" style="color:#0CA3EC; text-decoration:none;">Un message d’erreur s’affiche ?</a>`)}
+                ${bullet("Avant de monter à bord de votre vol, désactivez votre carte SIM principale et activez votre eSIM à destination.")}
+                ${bullet("Assurez-vous que l’itinérance des données est <b>ACTIVÉE</b> pour votre eSIM et que votre mode avion est <b>DÉSACTIVÉ</b>.")}
+                ${bullet(`Votre eSIM est rechargeable avec un forfait de la même destination. Surveillez votre consommation : <a href="${links.conso}" style="color:#0CA3EC; text-decoration:none;">Comment suivre ma consommation ?</a>`)}
+                ${bullet(`En cas de problème, <b>ne supprimez jamais votre eSIM</b>. Contactez-nous immédiatement : <a href="${links.contact}" style="color:#0CA3EC; text-decoration:none;">Contactez-nous</a>. Aucun remboursement sur une eSIM supprimée sans notre accord.`)}
+              </ul>
+
               <table width="100%" cellpadding="0" cellspacing="0" border="0"
-                style="background:#FFFFFF; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px;">
-                ${codeRow("Code d’activation", activationCode)}
-                ${codeRow("Code manuel", manualCode)}
+                style="background:#FFFFFF; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px; margin-bottom: 18px;">
+                ${codeRow("Code d’activation ANDROID", activationCode)}
+                ${codeRow("Code d’activation iPHONE", manualCode)}
                 ${codeRow("Adresse SM-DP+", smdpAddress)}
                 ${apnRow}
               </table>
+
+              <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                style="background:#F8FAFC; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px; margin-bottom: 22px;">
+                <tr>
+                  <td style="font-size: 13px; color:#475569; line-height:1.45;">
+                    <b>RAPPEL :</b> Pour que votre eSIM fonctionne, l’itinérance doit être <b>ACTIVÉE</b> et votre mode avion doit être <b>DÉSACTIVÉ</b>.
+                  </td>
+                </tr>
+              </table>
+
+              <h2 style="font-size: 16px; color:#0F172A; margin: 0 0 10px;">Procédures d’installation</h2>
+              <ul style="margin:0 0 8px 18px; padding:0;">
+                ${bullet(`<a href="${links.iphone}" style="color:#0CA3EC; text-decoration:none;">Installation d’une eSIM sur iPhone</a>`)}
+                ${bullet(`<a href="${links.samsung}" style="color:#0CA3EC; text-decoration:none;">Installation eSIM sur appareil Samsung</a>`)}
+                ${bullet(`<a href="${links.pixel}" style="color:#0CA3EC; text-decoration:none;">Installation sur appareil Google Pixel</a>`)}
+                ${bullet(`<a href="${links.ipad}" style="color:#0CA3EC; text-decoration:none;">Installation sur iPad (compatible eSIM seulement)</a>`)}
+              </ul>
+
+              <p style="font-size: 14px; color:#334155; margin: 18px 0 0;">
+                Nous vous souhaitons un excellent voyage avec votre eSIM Québec eSIM !
+              </p>
+
+              <p style="font-size: 14px; color:#334155; margin: 6px 0 0;">
+                Cordialement,
+              </p>
 
             </td>
           </tr>
 
           <tr>
             <td style="padding: 18px 24px; background:#F8FAFC; border-top: 1px solid #E5E7EB; font-size: 12px; color:#64748B;">
-              <b>Besoin d’aide&nbsp;?</b>
-              <a href="https://quebecesim.ca/pages/contactez-nous" style="text-decoration:none; color: rgb(94, 94, 94);">
+              <b>Besoin d’aide ?</b>
+              <a href="${links.contact}" style="text-decoration:none; color: rgb(94, 94, 94);">
                 Contactez-nous
               </a><br/>
-              © 2026 Québec E-Sim • Propulsé par Maya
+              © 2026 Québec eSIM • Propulsé par Maya
             </td>
           </tr>
 
         </table>
-
       </td>
     </tr>
   </table>
-
 </body>
 </html>`;
 }
@@ -257,7 +307,9 @@ async function sendEsimEmail({
   }
   const qrDataUrl = `data:image/png;base64,${qrBase64}`;
 
-  const subject = orderId ? `Your eSIM QR code (Order #${orderId})` : "Your eSIM QR code";
+  const subject = orderId
+  ? `Votre eSIM – Code QR (Commande #${orderId})`
+  : "Votre eSIM – Code QR";
 
   const html = formatEsimEmailHtml({
     firstName,
@@ -287,6 +339,68 @@ async function sendEsimEmail({
   }
 
   console.log("✅ eSIM email sent via Resend:", { to, id: result?.data?.id });
+  return true;
+}
+
+function formatTopUpEmailHtml({ firstName }) {
+  const safeName = (firstName || "").trim() || "client(e)";
+
+  return `
+    <div style="margin:0; padding:0; background:#F6FAFD; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial; color:#0F172A;">
+      <div style="max-width:640px; margin:0 auto; padding:24px;">
+        <div style="background:#FFFFFF; border:1px solid #E5E7EB; border-radius:16px; padding:22px;">
+          <h2 style="margin:0 0 12px; font-size:18px;">Bonjour ${esc(safeName)} 👋</h2>
+
+          <p style="margin:0 0 12px; font-size:14px; color:#334155;">
+            Nous vous confirmons que votre <b>Recharge eSIM</b> a bien été appliquée à votre forfait actuel.
+          </p>
+
+          <p style="margin:0 0 12px; font-size:14px; color:#334155;">
+            Celle-ci s’activera automatiquement à l’expiration du forfait de départ.
+          </p>
+
+          <p style="margin:14px 0 0; font-size:14px; color:#334155;">
+            Nous vous souhaitons une excellente fin de séjour !
+          </p>
+
+          <p style="margin:14px 0 0; font-size:12px; color:#64748B;">
+            Merci,<br/>Québec eSIM
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function sendTopUpEmail({ to, firstName, orderId }) {
+  if (!emailEnabled) {
+    console.log("ℹ️ Skipping top-up email (email not configured).");
+    return false;
+  }
+  if (!to) {
+    console.warn("⚠️ No recipient email; cannot send top-up email.");
+    return false;
+  }
+
+  const subject = orderId
+    ? `Recharge eSIM appliquée (Commande #${orderId})`
+    : "Recharge eSIM appliquée";
+
+  const html = formatTopUpEmailHtml({ firstName });
+
+  const result = await resend.emails.send({
+    from: emailFrom,
+    to,
+    subject,
+    html,
+  });
+
+  if (result?.error) {
+    console.error("❌ Resend top-up error:", result.error);
+    return false;
+  }
+
+  console.log("✅ Top-up email sent via Resend:", { to, id: result?.data?.id });
   return true;
 }
 
@@ -707,7 +821,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
         firstName,
         lastName,
         countryIso2,
-        tag: String(orderId),
+        tag: String(orderId)
       });
 
       mayaCustomerId = created.customerId;
@@ -924,7 +1038,6 @@ app.post("/webhooks/order-paid", async (req, res) => {
           const topupResp = await createMayaTopUp({
             iccid: best.iccid,
             planTypeId: topUpPlanTypeId,
-            tag: String(orderId),
           });
 
           console.log("✅ Maya top-up created:", {
@@ -953,6 +1066,13 @@ app.post("/webhooks/order-paid", async (req, res) => {
         }
       }
 
+      // ✅ Send confirmation email for top-up (once per order)
+      try {
+        await sendTopUpEmail({ to: email, firstName, orderId });
+      } catch (e) {
+        console.error("❌ Failed to send top-up email:", e?.message || e);
+      }
+
       continue;
     }
 
@@ -961,10 +1081,19 @@ app.post("/webhooks/order-paid", async (req, res) => {
     // -----------------------------
     for (let q = 0; q < qty; q++) {
       try {
+
+          const baseTag = `${item.title}-${item.variant_title}`
+          .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // remove accents
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-|-$/g, "");
+
+        const esimTag = qty > 1 ? `${baseTag}-${q + 1}` : baseTag;
+
         const mayaResp = await createMayaEsim({
           planTypeId: mayaPlanId,
           customerId: mayaCustomerId,
-          tag,
+          tag: esimTag,
         });
 
         console.log("✅ Maya eSIM created:", {
