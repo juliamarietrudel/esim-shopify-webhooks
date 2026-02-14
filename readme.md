@@ -19,15 +19,16 @@ curl --request GET \
 
 <!-- get esim information (for esim with id: 891030000003436056) -->
 curl --request GET \
-  --url 'https://api.maya.net/connectivity/v1/esim/8910300000049992500' \
+  --url 'https://api.maya.net/connectivity/v1/account/products?region=europe&country=us' \
   --header 'Accept: application/json' \
-  --header 'Authorization: Basic <BASIC_AUTH_BASE64>'
+  --header 'Authorization: Basic YjY4RWdDQjJLOVc5OmdscVBYcWVWcFk2bUVZTWZvMXJhSHlBR2JsdHhoT1N5TjdmdFJpNXc2UUxBRE1oc2NrM25IWFdydUpCdldLODM='
 
 <!-- get plan details -->
 curl --request GET \
   --url 'https://api.maya.net/connectivity/v1/esim/8910300000049992500/plan/6PETHX8CQ6Z0' \
   --header 'Accept: application/json' \
   --header 'Authorization: Basic <BASIC_AUTH_BASE64>'
+
 
 
 <!-- STEPS -->

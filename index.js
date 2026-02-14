@@ -554,6 +554,22 @@ app.use(
 
 app.get("/", (_req, res) => res.send("Webhook server running :)"));
 
+app.get("/test-email", async (_req, res) => {
+  try {
+    await resend.emails.send({
+      from: "no-reply@mail.quebecesim.ca",
+      to: "YOUR_EMAIL@gmail.com",
+      subject: "Resend test",
+      html: "<p>Email works 🎉</p>",
+    });
+
+    res.send("Email sent");
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Failed to send");
+  }
+});
+
 // -----------------------------
 // CRON (protected endpoint)
 // -----------------------------
