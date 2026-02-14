@@ -34,7 +34,7 @@ const app = express();
 // -----------------------------
 // Usage alert settings (CRON)
 // -----------------------------
-const USAGE_ALERT_THRESHOLD_PERCENT = Number(process.env.USAGE_ALERT_THRESHOLD_PERCENT || 20);
+const USAGE_ALERT_THRESHOLD_PERCENT = Number(process.env.USAGE_ALERT_THRESHOLD_PERCENT || 75);
 // In-memory de-dupe so we don't email every cron run while the server stays up.
 // NOTE: if the server restarts, this resets. For true "send once" you should persist a flag in Shopify metafields.
 
