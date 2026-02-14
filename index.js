@@ -556,17 +556,32 @@ app.get("/", (_req, res) => res.send("Webhook server running :)"));
 
 app.get("/test-email", async (_req, res) => {
   try {
-    await resend.emails.send({
-      from: emailFrom,
+    console.log("🧪 /test-email hit");
+    console.log("EMAIL_FROM =", emailFrom ? JSON.stringify(emailFrom) : "(empty)");
+    console.log("EMAIL_ENABLED =", emailEnabled);
+
+    if (!emailEnabled || !resend) {
+      return res.status(500).send("Email not configured (missing RESEND_API_KEY or EMAIL_FROM)");
+    }
+
+    const result = await resend.emails.send({
+      from: emailFrom, // must be a verified sender/domain in Resend
       to: "julia-marie@thewebix.ca",
       subject: "Resend test",
       html: "<p>Email works 🎉</p>",
     });
 
-    res.send("Email sent");
+    console.log("📨 Resend result:", result);
+
+    if (result?.error) {
+      console.error("❌ Resend error:", result.error);
+      return res.status(500).send(`Resend error: ${result.error.message || "unknown"}`);
+    }
+
+    return res.send(`Email queued ✅ id=${result?.data?.id || "no-id"}`);
   } catch (err) {
-    console.error(err);
-    res.status(500).send("Failed to send");
+    console.error("❌ /test-email exception:", err);
+    return res.status(500).send("Failed to send (exception)");
   }
 });
 
