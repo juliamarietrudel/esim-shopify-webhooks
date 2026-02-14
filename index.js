@@ -4,6 +4,7 @@ import crypto from "crypto";
 import QRCode from "qrcode";
 import { Resend } from "resend";
 import "dotenv/config";
+import fs from "fs";
 
 // import { safeFetch } from "./utils/http.js"; // (unused right now) you can remove
 
@@ -435,8 +436,26 @@ app.get("/cron/check-usage", async (req, res) => {
         console.log("📦 Plans found:", plans.length);
 
         const activePlan = pickCurrentPlan(plans);
+
         if (!activePlan) {
           console.warn(`⚠️ No plans attached to ICCID ${iccid}`);
+          continue;
+        }
+
+        // ✅ Only alert if the plan is activated AND network is ACTIVE/ENABLED
+        const activatedRaw = String(activePlan?.date_activated || "");
+        const isActivated = activatedRaw && activatedRaw !== "0000-00-00 00:00:00";
+
+        const netRaw = String(activePlan?.network_status || "").toUpperCase();
+        const isNetActive = netRaw === "ACTIVE" || netRaw === "ENABLED";
+
+        if (!isActivated || !isNetActive) {
+          console.log("ℹ️ Skipping usage alert (plan not active)", {
+            iccid,
+            planId: activePlan?.id,
+            date_activated: activatedRaw,
+            network_status: netRaw,
+          });
           continue;
         }
 
@@ -632,6 +651,10 @@ app.post("/webhooks/order-paid", async (req, res) => {
   console.log("---- WEBHOOK DEBUG END ----");
 
   if (!ok) return res.status(401).send("Invalid signature");
+
+
+  fs.writeFileSync("last-webhook.json", req.rawBody);
+  console.log("✅ Saved last webhook payload to last-webhook.json");
 
   const order = req.body || {};
   const orderId = order?.id;

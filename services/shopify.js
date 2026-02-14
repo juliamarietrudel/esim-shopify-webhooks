@@ -169,44 +169,37 @@ export async function saveMayaCustomerIdToShopifyCustomer(shopifyCustomerId, may
 
 // --- IDEMPOTENCY SUR ORDER (tes fonctions, je les garde) ---
 export async function getOrderProcessedFlag(orderId) {
-  const url = shopifyGraphqlUrl();
-  const token = shopifyToken();
-
   const gid = `gid://shopify/Order/${orderId}`;
 
   const query = `
     query ($id: ID!) {
       order(id: $id) {
+        id
         processed: metafield(namespace: "custom", key: "maya_processed") { value }
         processedAt: metafield(namespace: "custom", key: "maya_processed_at") { value }
       }
     }
   `;
 
-  const resp = await safeFetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": token,
-    },
-    body: JSON.stringify({ query, variables: { id: gid } }),
-  });
+  const json = await shopifyGraphql(query, { id: gid });
 
-  const json = await parseJsonSafe(resp);
+  const order = json?.data?.order;
+  if (!order) {
+    // This is important: if this happens, idempotency can never work
+    console.warn("⚠️ getOrderProcessedFlag: order is null from Shopify", { orderId, gid });
+    return { processed: false, processedAt: null };
+  }
 
   const processed =
-    String(json?.data?.order?.processed?.value || "").trim().toLowerCase() === "true";
+    String(order?.processed?.value || "").trim().toLowerCase() === "true";
 
   return {
     processed,
-    processedAt: json?.data?.order?.processedAt?.value || null,
+    processedAt: order?.processedAt?.value || null,
   };
 }
 
 export async function markOrderProcessed(orderId) {
-  const url = shopifyGraphqlUrl();
-  const token = shopifyToken();
-
   const gid = `gid://shopify/Order/${orderId}`;
   const nowIso = new Date().toISOString();
 
@@ -231,25 +224,18 @@ export async function markOrderProcessed(orderId) {
         ownerId: gid,
         namespace: "custom",
         key: "maya_processed_at",
-        type: "single_line_text_field",
+        type: "date_time",
         value: nowIso,
       },
     ],
   };
 
-  const resp = await safeFetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": token,
-    },
-    body: JSON.stringify({ query: mutation, variables }),
-  });
+  const json = await shopifyGraphql(mutation, variables);
 
-  const json = await parseJsonSafe(resp);
-  if (!resp.ok || json.errors) {
-    console.error("❌ Shopify markOrderProcessed error:", json.errors || json);
-    throw new Error(`Shopify GraphQL failed (${resp.status})`);
+  const userErrors = json?.data?.metafieldsSet?.userErrors || [];
+  if (userErrors.length) {
+    console.error("❌ markOrderProcessed userErrors:", { orderId, userErrors });
+    throw new Error(userErrors[0]?.message || "Failed to write maya_processed metafields");
   }
 
   return true;
