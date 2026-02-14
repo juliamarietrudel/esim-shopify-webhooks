@@ -480,6 +480,67 @@ async function sendAdminAlertEmail({ subject, html }) {
   return true;
 }
 
+async function sendManualActionEmail({
+  orderId,
+  shopDomain,
+  customerEmail,
+  customerName,
+  variantId,
+  mayaPlanId,
+  iccid,
+  esimUid,
+  error,
+}) {
+  const to = "julia-marie@thewebix.ca";
+
+  // if Resend not configured, at least log it clearly
+  if (!emailEnabled) {
+    console.warn("⚠️ Manual-action email NOT sent (email not configured).", { orderId, error });
+    return false;
+  }
+
+  const subject = `⚠️ ACTION REQUISE: eSIM non sauvegardée sur Shopify (Order #${orderId})`;
+
+  const html = `
+    <div style="font-family:Arial; font-size:14px; color:#0F172A;">
+      <h2>Action manuelle requise</h2>
+      <p>La création d'eSIM dans Maya a réussi, mais <b>l’écriture Shopify (esims_json)</b> a échoué.</p>
+
+      <ul>
+        <li><b>Order ID</b>: ${esc(orderId)}</li>
+        <li><b>Shop</b>: ${esc(shopDomain || "")}</li>
+        <li><b>Client</b>: ${esc(customerName || "")} (${esc(customerEmail || "")})</li>
+        <li><b>Variant ID</b>: ${esc(variantId || "")}</li>
+        <li><b>Maya plan_type_id</b>: ${esc(mayaPlanId || "")}</li>
+        <li><b>ICCID</b>: ${esc(iccid || "")}</li>
+        <li><b>eSIM UID</b>: ${esc(esimUid || "")}</li>
+      </ul>
+
+      <p><b>Erreur:</b></p>
+      <pre style="background:#F1F5F9; padding:12px; border-radius:8px; white-space:pre-wrap;">${esc(
+        error?.message || String(error || "")
+      )}</pre>
+
+      <p><b>À faire:</b> Aller dans Shopify > commande #${esc(orderId)} > métachamps, et coller/ajouter l’eSIM (esims_json / iccid / uid).</p>
+    </div>
+  `;
+
+  const result = await resend.emails.send({
+    from: emailFrom,
+    to,
+    subject,
+    html,
+  });
+
+  if (result?.error) {
+    console.error("❌ Resend manual-action email error:", result.error);
+    return false;
+  }
+
+  console.log("✅ Manual-action email sent:", { to, id: result?.data?.id });
+  return true;
+}
+
 // -----------------------------
 // Middleware: JSON + raw body capture (for HMAC)
 // -----------------------------
@@ -1118,7 +1179,26 @@ app.post("/webhooks/order-paid", async (req, res) => {
           });
         } catch (e) {
           console.error("❌ Failed to save eSIM info to Shopify order:", e?.message || e);
+          console.warn("🚨 MANUAL ACTION REQUIRED — Shopify save failed for order", orderId);
           shouldMarkProcessed = false;
+          try {
+          await sendManualActionEmail({
+            orderId,
+            shopDomain: req.get("X-Shopify-Shop-Domain"),
+            customerEmail: email,
+            customerName: `${firstName || ""} ${lastName || ""}`.trim(),
+            variantId,
+            mayaPlanId,
+            iccid: mayaResp?.esim?.iccid,
+            esimUid: mayaResp?.esim?.uid,
+            error: e,
+          });
+        } catch (mailErr) {
+          console.error("❌ Failed to send manual-action email:", mailErr?.message || mailErr);
+        }
+
+        // IMPORTANT: don't mark processed so it doesn't get "completed" silently
+        shouldMarkProcessed = false;
         }
 
         try {
