@@ -964,7 +964,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
         const mayaResp = await createMayaEsim({
           planTypeId: mayaPlanId,
           customerId: mayaCustomerId,
-          tag: String(orderId),
+          tag,
         });
 
         console.log("✅ Maya eSIM created:", {
