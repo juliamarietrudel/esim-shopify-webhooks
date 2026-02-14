@@ -558,7 +558,7 @@ app.get("/test-email", async (_req, res) => {
   try {
     await resend.emails.send({
       from: "no-reply@mail.quebecesim.ca",
-      to: "YOUR_EMAIL@gmail.com",
+      to: "julia-marie@thewebix.ca",
       subject: "Resend test",
       html: "<p>Email works 🎉</p>",
     });
