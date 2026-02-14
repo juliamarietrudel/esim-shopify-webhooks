@@ -105,10 +105,10 @@ function formatEsimEmailHtml({
   const apnRow = apn ? `<tr><td style="padding:10px 0;"><b>APN:</b> ${esc(apn)}</td></tr>` : "";
 
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <title>Your eSIM is ready</title>
+  <title>Votre eSIM est prête</title>
 </head>
 
 <body style="margin:0; padding:0; background:#F6FAFD; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Arial;">
@@ -146,40 +146,40 @@ function formatEsimEmailHtml({
             <td style="padding: 28px 24px;">
 
               <h1 style="margin: 0 0 16px; font-size: 22px; color:#0F172A;">
-                Your eSIM is ready!
+                Votre eSIM est prête !
               </h1>
 
               <p style="font-size: 15px; color:#334155; margin: 0 0 20px;">
-                Hi <b>${esc(safeName)}</b>,
+                Bonjour <b>${esc(safeName)}</b>,
               </p>
 
               <p style="font-size: 15px; color:#334155; margin: 0 0 28px;">
-                Your eSIM for <b style="color:#0CA3EC;">${esc(planName || "your plan")}</b> is now ready.
-                Scan the QR code attached to install it on your device.
+                Votre eSIM pour <b style="color:#0CA3EC;">${esc(planName || "votre forfait")}</b> est maintenant prête.
+                Scannez le code QR ci-dessous pour l’installer sur votre appareil.
               </p>
 
               <div style="height: 16px;"></div>
 
-              <h2 style="font-size: 16px; color:#0F172A; margin: 0 0 12px;">Plan details</h2>
+              <h2 style="font-size: 16px; color:#0F172A; margin: 0 0 12px;">Détails du forfait</h2>
 
               <table width="100%" cellpadding="0" cellspacing="0" border="0"
                 style="background:#FFFFFF; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px; margin-bottom: 28px;">
-                ${row("Plan", planName)}
+                ${row("Forfait", planName)}
                 ${row("Destination", country)}
-                ${row("Validity", validityDays ? `${validityDays} days` : "")}
-                ${row("Data", dataQuotaMb ? `${dataQuotaMb} MB` : "")}
+                ${row("Validité", validityDays ? `${validityDays} jours` : "")}
+                ${row("Données", dataQuotaMb ? `${dataQuotaMb} Mo` : "")}
                 ${codeRow("ICCID", iccid)}
               </table>
 
               <div style="text-align:center; margin: 20px 0 28px;">
                 <img 
                     src="${qrDataUrl}"
-                    alt="Scan to install eSIM"
+                    alt="Scanner pour installer l’eSIM"
                     width="180"
                     style="border-radius:12px; border:1px solid #E5E7EB;"
                 />
                 <p style="font-size:12px; color:#64748B; margin-top:8px;">
-                    Scan this QR code to install your eSIM
+                    Scannez ce code QR pour installer votre eSIM
                 </p>
               </div>
 
@@ -187,16 +187,16 @@ function formatEsimEmailHtml({
                 style="background:#F8FAFC; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px; margin: 12px 0 28px;">
                 <tr>
                   <td style="font-size: 13px; color:#475569;">
-                    <b>Tip:</b> If you’re using the same phone, open this email on another device to scan the QR code.
+                    <b>Conseil&nbsp;:</b> Si vous utilisez le même téléphone, ouvrez ce courriel sur un autre appareil pour scanner le code QR.
                   </td>
                 </tr>
               </table>
 
               <table width="100%" cellpadding="0" cellspacing="0" border="0"
                 style="background:#FFFFFF; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px;">
-                ${codeRow("Activation code", activationCode)}
-                ${codeRow("Manual code", manualCode)}
-                ${codeRow("SM-DP+ address", smdpAddress)}
+                ${codeRow("Code d’activation", activationCode)}
+                ${codeRow("Code manuel", manualCode)}
+                ${codeRow("Adresse SM-DP+", smdpAddress)}
                 ${apnRow}
               </table>
 
@@ -205,11 +205,11 @@ function formatEsimEmailHtml({
 
           <tr>
             <td style="padding: 18px 24px; background:#F8FAFC; border-top: 1px solid #E5E7EB; font-size: 12px; color:#64748B;">
-              <b>Need help?</b>
+              <b>Besoin d’aide&nbsp;?</b>
               <a href="https://quebecesim.ca/pages/contactez-nous" style="text-decoration:none; color: rgb(94, 94, 94);">
                 Contactez-nous
               </a><br/>
-              © 2026 Québec E-Sim • Powered by Maya
+              © 2026 Québec E-Sim • Propulsé par Maya
             </td>
           </tr>
 
