@@ -190,3 +190,4 @@ SUMMARY
 	4.	Parse the order into “actions” based on the products bought
 	5.	Execute actions (create eSIM / top up / change / delete)
 	6.	Email results (QR codes, confirmations)
+
