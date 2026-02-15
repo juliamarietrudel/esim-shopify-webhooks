@@ -158,10 +158,10 @@ function shopifyGraphqlUrl() {
 // -----------------------------
 function verifyShopifyWebhook(req) {
   const hmacHeader = req.get("X-Shopify-Hmac-Sha256") || "";
-  const secret = process.env.WEBHOOK_API_KEY; // Shopify app API secret key
+  const secret = process.env.WEBHOOK_API_SECRET; // Shopify app API secret key
 
   if (!secret) {
-    console.error("❌ Missing WEBHOOK_API_KEY env var on server");
+    console.error("❌ Missing WEBHOOK_API_SECRET env var on server");
     return false;
   }
   if (!hmacHeader) {

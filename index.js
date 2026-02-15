@@ -31,6 +31,7 @@ import {
 } from "./services/maya.js";
 
 const app = express();
+console.log("BOOT MARKER: build-2026-02-15-01");
 
 // -----------------------------
 // Usage alert settings (CRON)
@@ -814,10 +815,10 @@ function pickCurrentPlan(plans) {
 // -----------------------------
 function verifyShopifyWebhook(req) {
   const hmacHeader = req.get("X-Shopify-Hmac-Sha256") || "";
-  const secret = process.env.WEBHOOK_API_KEY;
+  const secret = process.env.WEBHOOK_API_SECRET;
 
   if (!secret) {
-    console.error("❌ Missing WEBHOOK_API_KEY env var on server");
+    console.error("❌ Missing WEBHOOK_API_SECRET env var on server");
     return false;
   }
   if (!hmacHeader) {
