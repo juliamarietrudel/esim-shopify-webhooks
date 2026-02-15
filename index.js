@@ -858,7 +858,7 @@ function verifyShopifyWebhook(req) {
 // -----------------------------
 app.post("/webhooks/order-paid", async (req, res) => {
   const ok = verifyShopifyWebhook(req);
-
+  console.log("🟨 Webhook shop =", req.get("x-shopify-shop-domain"));
   console.log("---- WEBHOOK DEBUG START ----");
   console.log("Topic:", req.get("X-Shopify-Topic"));
   console.log("Shop:", req.get("X-Shopify-Shop-Domain"));
