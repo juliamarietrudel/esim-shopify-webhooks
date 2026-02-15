@@ -852,6 +852,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
   console.log("Topic:", req.get("X-Shopify-Topic"));
   console.log("Shop:", req.get("X-Shopify-Shop-Domain"));
   console.log("Content-Type:", req.get("content-type"));
+  console.log("Buffer rawBody?", Buffer.isBuffer(req.rawBody));
   console.log("Raw body length:", req.rawBody?.length);
   console.log("HMAC MATCH:", ok);
   console.log("---- WEBHOOK DEBUG END ----");
