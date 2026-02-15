@@ -815,10 +815,10 @@ function pickCurrentPlan(plans) {
 // -----------------------------
 function verifyShopifyWebhook(req) {
   const hmacHeader = req.get("X-Shopify-Hmac-Sha256") || "";
-  const secret = process.env.WEBHOOK_API_SECRET;
+  const secret = (process.env.WEBHOOK_API_SECRET || "").trim();
 
   if (!secret) {
-    console.error("❌ Missing WEBHOOK_API_SECRET env var on server");
+    console.error("❌ Missing WEBHOOK_API_SECRET (or blank after trim)");
     return false;
   }
   if (!hmacHeader) {
@@ -830,7 +830,17 @@ function verifyShopifyWebhook(req) {
     return false;
   }
 
-  const computed = crypto.createHmac("sha256", secret).update(req.rawBody).digest("base64");
+  const computed = crypto
+    .createHmac("sha256", secret)
+    .update(req.rawBody)
+    .digest("base64");
+
+  // safe debug (doesn't expose the secret)
+  console.log("HMAC header length:", hmacHeader.length);
+  console.log("Computed HMAC length:", computed.length);
+  console.log("Header starts:", hmacHeader.slice(0, 10));
+  console.log("Computed starts:", computed.slice(0, 10));
+  console.log("SECRET length:", secret.length);
 
   try {
     return crypto.timingSafeEqual(
@@ -854,6 +864,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
   console.log("Shop:", req.get("X-Shopify-Shop-Domain"));
   console.log("Content-Type:", req.get("content-type"));
   console.log("Buffer rawBody?", Buffer.isBuffer(req.rawBody));
+  console.log("WEBHOOK_API_SECRET length:", (process.env.WEBHOOK_API_SECRET || "").trim().length);
   console.log("Raw body length:", req.rawBody?.length);
   console.log("HMAC MATCH:", ok);
   console.log("---- WEBHOOK DEBUG END ----");
