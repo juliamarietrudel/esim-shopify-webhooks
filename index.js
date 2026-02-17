@@ -1038,6 +1038,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
 
       const customer = mayaDetails?.customer;
       const esims = Array.isArray(customer?.esims) ? customer.esims : [];
+      const destinationShopify = String(item.title || "").trim();
       console.log("👤 Maya customer loaded", { mayaCustomerId, esims_count: esims.length });
 
       const candidateEsims = esims.filter((e) => {
