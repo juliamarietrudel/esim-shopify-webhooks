@@ -1049,9 +1049,27 @@ app.post("/webhooks/order-paid", async (req, res) => {
         return true;
       });
 
+      console.log("📱 candidateEsims:", candidateEsims.map(e => ({
+        iccid: e.iccid,
+        uid: e.uid,
+        state: e.state,
+        service_status: e.service_status,
+        plans_count: Array.isArray(e.plans) ? e.plans.length : 0,
+      })));
+
+      // Helper functions for plan selection
       function isActivated_(plan) {
         const da = String(plan?.date_activated || "");
         return da && da !== "0000-00-00 00:00:00";
+      }
+      function isNetActive_(plan) {
+        const ns = String(plan?.network_status || "").toUpperCase();
+        return ns === "ACTIVE" || ns === "ENABLED";
+      }
+      function isNotEnded_(plan) {
+        const end = Date.parse(String(plan?.end_time || ""));
+        if (!Number.isFinite(end)) return true; // si Maya ne fournit pas end_time, on considère OK
+        return end > Date.now();
       }
       function toInt_(v) {
         const n = Number(v);
@@ -1061,72 +1079,101 @@ app.post("/webhooks/order-paid", async (req, res) => {
         const t = Date.parse(String(s || ""));
         return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
       }
+      // Accent/case-insensitive text normalization
+      function normalizeText_(s) {
+        return String(s || "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .trim()
+          .toLowerCase();
+      }
+      // Essaie de deviner si un plan Maya correspond à la destination (par son nom)
+      function matchesDestination_(plan, destination) {
+        const dest = normalizeText_(destination);
+        if (!dest) return false;
 
-      let best = null;
+        const planName = normalizeText_(
+          plan?.plan_type?.name || plan?.plan_type_name || plan?.name || ""
+        );
 
+        return planName.includes(dest);
+      }
+
+      // 1) Collecte tous les plans candidates sur des eSIMs "valides"
+      const planCandidates = [];
       for (const e of candidateEsims) {
         const plans = Array.isArray(e?.plans) ? e.plans : [];
         for (const p of plans) {
-          const planTypeId = p?.plan_type?.id;
-          if (!planTypeId) continue;
-          if (normId(planTypeId) !== normId(mayaPlanId)) continue;
-
-          const bytesRemaining = toInt_(p?.data_bytes_remaining);
-          const activated = isActivated_(p);
-
-          const candidate = {
+          planCandidates.push({
             iccid: e?.iccid,
             esimUid: e?.uid,
             planId: p?.id,
-            planTypeId,
-            bytesRemaining: Number.isFinite(bytesRemaining) ? bytesRemaining : Number.POSITIVE_INFINITY,
-            activated,
+            planTypeId: p?.plan_type?.id,
+            planTypeName: p?.plan_type?.name,
+            bytesRemaining: toInt_(p?.data_bytes_remaining),
+            activated: isActivated_(p),
+            netActive: isNetActive_(p),
+            notEnded: isNotEnded_(p),
             startTime: p?.start_time,
-          };
-
-          if (!best) {
-            best = candidate;
-            continue;
-          }
-
-          if (candidate.bytesRemaining < best.bytesRemaining) {
-            best = candidate;
-            continue;
-          }
-          if (candidate.bytesRemaining > best.bytesRemaining) continue;
-
-          if (candidate.activated && !best.activated) {
-            best = candidate;
-            continue;
-          }
-          if (!candidate.activated && best.activated) continue;
-
-          if (timeValue_(candidate.startTime) < timeValue_(best.startTime)) {
-            best = candidate;
-            continue;
-          }
+            rawPlan: p,
+          });
         }
       }
 
+      // 2) D’abord: match exact sur plan_type_id (comme avant)
+      let best = null;
+      const exact = planCandidates
+        .filter(c => c.planTypeId && normId(c.planTypeId) === normId(mayaPlanId))
+        .filter(c => c.activated && c.netActive && c.notEnded);
+
+      if (exact.length > 0) {
+        best = exact.sort((a, b) => {
+          // priorité: moins de data restante
+          const ra = Number.isFinite(a.bytesRemaining) ? a.bytesRemaining : Number.POSITIVE_INFINITY;
+          const rb = Number.isFinite(b.bytesRemaining) ? b.bytesRemaining : Number.POSITIVE_INFINITY;
+          if (ra !== rb) return ra - rb;
+          // puis plus ancien (startTime plus petit)
+          return timeValue_(a.startTime) - timeValue_(b.startTime);
+        })[0];
+      } else {
+        // 3) Fallback: même destination UNIQUEMENT, plan actif, peu importe la taille
+        const sameDest = planCandidates
+          .filter(c => matchesDestination_(c.rawPlan, destinationShopify))
+          .filter(c => c.activated && c.netActive && c.notEnded);
+        if (sameDest.length > 0) {
+          console.warn(
+            `⚠️ No exact plan_type match for top-up (${mayaPlanId}). Falling back to active eSIM in same destination: ${destinationShopify}`
+          );
+          best = sameDest.sort((a, b) => {
+            // même heuristique
+            const ra = Number.isFinite(a.bytesRemaining) ? a.bytesRemaining : Number.POSITIVE_INFINITY;
+            const rb = Number.isFinite(b.bytesRemaining) ? b.bytesRemaining : Number.POSITIVE_INFINITY;
+            if (ra !== rb) return ra - rb;
+            return timeValue_(a.startTime) - timeValue_(b.startTime);
+          })[0];
+        }
+      }
+      // 4) Si aucun best: on envoie email admin et on stoppe
       if (!best?.iccid) {
         shouldMarkProcessed = false;
         await sendAdminAlertEmail({
-          subject: `⚠️ Top-up received but no matching eSIM found (Order #${orderId})`,
+          subject: `⚠️ Top-up reçu mais aucune eSIM ACTIVE trouvée pour la destination (Order #${orderId})`,
           html: `
-            <p>Order contains a <b>top-up</b>, but we couldn't find any eSIM with an existing plan matching this plan_type_id.</p>
+            <p>Le client a acheté une <b>recharge</b>, mais on n'a trouvé <b>aucune eSIM active</b> correspondant à la destination <b>${esc(destinationShopify)}</b>.</p>
             <ul>
               <li><b>Order ID</b>: ${orderId}</li>
-              <li><b>Email</b>: ${email || ""}</li>
-              <li><b>Maya customer id</b>: ${mayaCustomerId}</li>
-              <li><b>Variant ID</b>: ${variantId}</li>
-              <li><b>Maya plan_type_id</b>: ${mayaPlanId}</li>
+              <li><b>Email</b>: ${esc(email || "")}</li>
+              <li><b>Maya customer id</b>: ${esc(mayaCustomerId)}</li>
+              <li><b>Destination</b>: ${esc(destinationShopify)}</li>
+              <li><b>Maya plan_type_id (top-up)</b>: ${esc(mayaPlanId)}</li>
             </ul>
-            <p>No action was taken. Please contact the customer.</p>
+            <p><b>Action:</b> contacter le client / créer une eSIM manuellement si nécessaire.</p>
           `,
         });
         continue;
       }
 
+      // Log and use chosen best only once
       console.log("🔁 Top-up target chosen:", {
         iccid: best.iccid,
         esim_uid: best.esimUid,
@@ -1145,7 +1192,6 @@ app.post("/webhooks/order-paid", async (req, res) => {
             iccid: best.iccid,
             planTypeId: topUpPlanTypeId,
           });
-
           console.log("✅ Maya top-up created:", {
             iccid: best.iccid,
             plan_type_id: topUpPlanTypeId,
@@ -1171,14 +1217,12 @@ app.post("/webhooks/order-paid", async (req, res) => {
           });
         }
       }
-
       // ✅ Send confirmation email for top-up (once per order)
       try {
         await sendTopUpEmail({ to: email, firstName, orderId });
       } catch (e) {
         console.error("❌ Failed to send top-up email:", e?.message || e);
       }
-
       continue;
     }
 
