@@ -13,7 +13,6 @@ export async function getMayaEsimDetailsByIccid(iccid) {
   if (!iccidStr) throw new Error("getMayaEsimDetailsByIccid: missing iccid");
 
   const url = `${mayaBaseUrl()}/connectivity/v1/esim/${encodeURIComponent(iccidStr)}`;
-  console.log("🌐 Maya GET eSIM URL:", url);
 
   const resp = await safeFetch(url, {
     method: "GET",
@@ -40,7 +39,6 @@ export async function getMayaEsimPlansByIccid(iccid) {
   if (!iccidStr) throw new Error("getMayaEsimPlansByIccid: missing iccid");
 
   const url = `${mayaBaseUrl()}/connectivity/v1/esim/${encodeURIComponent(iccidStr)}/plans`;
-  console.log("🌐 Maya GET eSIM PLANS URL:", url);
 
   const resp = await safeFetch(url, {
     method: "GET",
