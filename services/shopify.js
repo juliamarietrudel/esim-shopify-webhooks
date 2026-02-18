@@ -168,6 +168,67 @@ export async function saveMayaCustomerIdToShopifyCustomer(shopifyCustomerId, may
   return true;
 }
 
+// ---------- Order Maya customer id metafield ----------
+const ORDER_MAYA_CUSTOMER_ID_KEY = "maya_customer_id";
+const ORDER_MAYA_CUSTOMER_ID_NAMESPACE = "custom";
+
+export async function saveMayaCustomerIdToOrder(orderId, mayaCustomerId) {
+  const value = String(mayaCustomerId || "").trim();
+  if (!orderId) throw new Error("saveMayaCustomerIdToOrder: missing orderId");
+  if (!value) throw new Error("saveMayaCustomerIdToOrder: missing mayaCustomerId");
+
+  const gid = `gid://shopify/Order/${orderId}`;
+
+  const mutation = `
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        userErrors { field message }
+      }
+    }
+  `;
+
+  const variables = {
+    metafields: [
+      {
+        ownerId: gid,
+        namespace: ORDER_MAYA_CUSTOMER_ID_NAMESPACE,
+        key: ORDER_MAYA_CUSTOMER_ID_KEY,
+        type: "single_line_text_field",
+        value,
+      },
+    ],
+  };
+
+  const json = await shopifyGraphql(mutation, variables);
+  const userErrors = json?.data?.metafieldsSet?.userErrors || [];
+  if (userErrors.length) {
+    throw new Error(userErrors[0]?.message || "Failed to write maya_customer_id on order");
+  }
+
+  return true;
+}
+
+export async function getMayaCustomerIdFromOrder(orderId) {
+  if (!orderId) throw new Error("getMayaCustomerIdFromOrder: missing orderId");
+
+  const gid = `gid://shopify/Order/${orderId}`;
+
+  const query = `
+    query ($id: ID!) {
+      order(id: $id) {
+        mayaCustomerId: metafield(namespace: "${ORDER_MAYA_CUSTOMER_ID_NAMESPACE}", key: "${ORDER_MAYA_CUSTOMER_ID_KEY}") {
+          value
+        }
+      }
+    }
+  `;
+
+  const json = await shopifyGraphql(query, { id: gid });
+  const raw = json?.data?.order?.mayaCustomerId?.value ?? "";
+  const trimmed = String(raw).trim();
+  return trimmed || null;
+}
+
 // --- IDEMPOTENCY SUR ORDER (tes fonctions, je les garde) ---
 export async function getOrderProcessedFlag(orderId) {
   const gid = `gid://shopify/Order/${orderId}`;
@@ -632,26 +693,24 @@ export async function getOrdersWithEsims({ daysBack = 120 } = {}) {
     `(metafield:custom.${ESIMS_JSON_KEY} OR metafield:custom.maya_iccid)`;
 
   const query = `
-    query OrdersWithEsims($first: Int!, $query: String!) {
-      orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
-        edges {
-          node {
-            id
-            name
-            email
-            customer { firstName lastName }
-            billingAddress { firstName lastName }
-            shippingAddress { firstName lastName }
+  query OrdersWithEsims($first: Int!, $query: String!) {
+    orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
+      edges {
+        node {
+          id
+          name
 
-            mayaIccid: metafield(namespace: "custom", key: "maya_iccid") { value }
-            mayaEsimUid: metafield(namespace: "custom", key: "maya_esim_uid") { value }
+          mayaCustomerId: metafield(namespace: "custom", key: "maya_customer_id") { value }
 
-            esimsJson: metafield(namespace: "custom", key: "${ESIMS_JSON_KEY}") { value }
-          }
+          mayaIccid: metafield(namespace: "custom", key: "maya_iccid") { value }
+          mayaEsimUid: metafield(namespace: "custom", key: "maya_esim_uid") { value }
+
+          esimsJson: metafield(namespace: "custom", key: "${ESIMS_JSON_KEY}") { value }
         }
       }
     }
-  `;
+  }
+`;
 
   const json = await shopifyGraphql(query, { first: 100, query: searchQuery });
   const edges = json?.data?.orders?.edges || [];
@@ -660,20 +719,9 @@ export async function getOrdersWithEsims({ daysBack = 120 } = {}) {
     .map(({ node }) => {
       const orderGid = node?.id || "";
       const orderId = orderGid.split("/").pop();
+      const orderName = String(node?.name || "").trim();
 
-      const email = (node?.email || "").trim() || "";
-
-      const firstName =
-        (node?.customer?.firstName || "").trim() ||
-        (node?.billingAddress?.firstName || "").trim() ||
-        (node?.shippingAddress?.firstName || "").trim() ||
-        "";
-
-      const lastName =
-        (node?.customer?.lastName || "").trim() ||
-        (node?.billingAddress?.lastName || "").trim() ||
-        (node?.shippingAddress?.lastName || "").trim() ||
-        "";
+      const mayaCustomerId = String(node?.mayaCustomerId?.value || "").trim() || null;
 
       const singleIccid = (node?.mayaIccid?.value || "").trim();
       const singleUid = (node?.mayaEsimUid?.value || "").trim();
@@ -690,14 +738,15 @@ export async function getOrdersWithEsims({ daysBack = 120 } = {}) {
         ? esims
         : (singleIccid ? [{ iccid: singleIccid, uid: singleUid || "" }] : []);
 
+      // If we can't email (no mayaCustomerId) the cron can't notify; but still return it
+      // so you can log/report missing IDs.
       if (!orderId || !finalEsims.length) return null;
 
       return {
         orderId,
-        email,
-        firstName,
-        lastName,
-        esims: finalEsims,      // ✅ NEW: list
+        orderName,
+        mayaCustomerId,
+        esims: finalEsims,
       };
     })
     .filter(Boolean);
