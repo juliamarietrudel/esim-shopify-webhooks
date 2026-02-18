@@ -1,3 +1,11 @@
+// forfait_only.js
+import {
+  getOrderProcessedFlag,
+  markOrderProcessed,
+  saveEsimToOrder,
+  tryAcquireOrderProcessingLock,
+  releaseOrderProcessingLock,
+} from "./services/shopify.js";
 import express from "express";
 import crypto from "crypto";
 import QRCode from "qrcode";
@@ -107,9 +115,6 @@ async function sendEsimEmail({ to, firstName, orderId, activationCode, manualCod
   console.log("✅ eSIM email sent via Resend:", { to, id: result?.data?.id });
   return true;
 }
-
-// TEMP idempotency for testing (resets on restart/deploy)
-const processedOrders = new Set();
 
 app.use(
   express.json({
@@ -458,46 +463,79 @@ app.post("/webhooks/order-paid", async (req, res) => {
 
   const order = req.body || {};
   const orderId = order?.id;
-  const { email, firstName, lastName, countryIso2 } = pickBuyerFromOrder(order);
 
-  console.log("Order ID:", orderId);
-  console.log("Buyer:", { email, firstName, lastName, countryIso2 });
-  console.log("order.customer_id:", order?.customer_id);
-  console.log("order.customer?.id:", order?.customer?.id);
-  console.log("order.customer:", order?.customer);
-
-  // TEMP idempotency: avoid double provisioning if Shopify retries
-  if (orderId && processedOrders.has(orderId)) {
-    console.log("🔁 Duplicate webhook ignored for order:", orderId);
+  if (!orderId) {
+    console.warn("⚠️ Missing order id in webhook payload");
     return res.status(200).send("OK");
   }
-  if (orderId) processedOrders.add(orderId);
 
-  // 1) Get or create Maya customer id (reuse Shopify metafield if present)
-  let mayaCustomerId = null;
-
-  const shopifyCustomerId = order?.customer?.id || order?.customer_id || null;
-  console.log("Shopify customer id on order:", shopifyCustomerId);
-
-  if (shopifyCustomerId) {
+  // ✅ check processed flag
+  let processed = false;
+  let processedAt = null;
   try {
-      const existing = await getMayaCustomerIdFromShopifyCustomer(shopifyCustomerId);
-      const existingTrimmed = (existing || "").trim();
-
-      if (existingTrimmed) {
-        mayaCustomerId = existingTrimmed;
-        console.log("✅ Reusing Maya customer id from Shopify metafield:", mayaCustomerId);
-      } else {
-        console.log("ℹ️ Shopify metafield maya_customer_id is empty (will create Maya customer).");
-      }
-    } catch (e) {
-      console.error("❌ Could not read Shopify customer metafield:", e.message);
-    }
+    const flag = await getOrderProcessedFlag(orderId);
+    processed = Boolean(flag?.processed);
+    processedAt = flag?.processedAt || null;
+  } catch (e) {
+    console.error("❌ Failed to read processed flag (will continue anyway):", e?.message || e);
   }
 
-  // If not found, create Maya customer + save it to Shopify metafield
-  if (!mayaCustomerId) {
-    try {
+  if (processed) {
+    console.log("🛑 Order already processed, skipping:", { orderId, processedAt });
+    return res.status(200).send("OK");
+  }
+
+  // ✅ Acquire lock (prevents duplicates when Shopify retries / concurrent deliveries)
+  let lockToken = null;
+  try {
+    const lock = await tryAcquireOrderProcessingLock(orderId);
+
+    if (!lock?.acquired) {
+      console.log("🔒 Order is already being processed by another webhook. Skipping.", lock);
+      return res.status(200).send("OK");
+    }
+
+    lockToken = lock.token;
+    console.log("🔒 Lock acquired:", { orderId, lockToken });
+  } catch (e) {
+    console.error("❌ Failed to acquire processing lock (better to skip than double-provision):", e?.message || e);
+    return res.status(200).send("OK");
+  }
+
+  let completed = false;
+
+  try {
+    const { email, firstName, lastName, countryIso2 } = pickBuyerFromOrder(order);
+
+    console.log("Order ID:", orderId);
+    console.log("Buyer:", { email, firstName, lastName, countryIso2 });
+    console.log("order.customer_id:", order?.customer_id);
+    console.log("order.customer?.id:", order?.customer?.id);
+    console.log("order.customer:", order?.customer);
+
+    // 1) Get or create Maya customer id
+    let mayaCustomerId = null;
+
+    const shopifyCustomerId = order?.customer?.id || order?.customer_id || null;
+    console.log("Shopify customer id on order:", shopifyCustomerId);
+
+    if (shopifyCustomerId) {
+      try {
+        const existing = await getMayaCustomerIdFromShopifyCustomer(shopifyCustomerId);
+        const existingTrimmed = (existing || "").trim();
+
+        if (existingTrimmed) {
+          mayaCustomerId = existingTrimmed;
+          console.log("✅ Reusing Maya customer id from Shopify metafield:", mayaCustomerId);
+        } else {
+          console.log("ℹ️ Shopify metafield maya_customer_id is empty (will create Maya customer).");
+        }
+      } catch (e) {
+        console.error("❌ Could not read Shopify customer metafield:", e?.message || e);
+      }
+    }
+
+    if (!mayaCustomerId) {
       const created = await createMayaCustomer({
         email,
         firstName,
@@ -505,6 +543,7 @@ app.post("/webhooks/order-paid", async (req, res) => {
         countryIso2,
         tag: String(orderId || ""),
       });
+
       mayaCustomerId = created.customerId;
       console.log("✅ Maya customer created:", mayaCustomerId);
 
@@ -516,86 +555,106 @@ app.post("/webhooks/order-paid", async (req, res) => {
             mayaCustomerId,
           });
         } catch (e) {
-          console.error("❌ Failed saving Maya customer id to Shopify:", e.message);
+          console.error("❌ Failed saving Maya customer id to Shopify:", e?.message || e);
         }
       } else {
         console.warn("⚠️ No Shopify customer on order, can't persist Maya ID (guest checkout).");
       }
-    } catch (e) {
-      console.error("❌ Maya customer creation failed:", e.message);
-      return res.status(200).send("OK");
-    }
-  }
-
-  // 2) Create eSIM(s) attached to that customer
-  const items = order?.line_items || [];
-  console.log("🧾 LINE ITEMS:", items.length);
-
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    const variantId = String(item.variant_id);
-    const qty = Number(item.quantity || 1);
-
-    let mayaPlanId = null;
-    try {
-      mayaPlanId = await getMayaPlanIdForVariant(variantId);
-    } catch (e) {
-      console.error("❌ Failed to fetch metafield for variant:", variantId, e.message);
     }
 
-    console.log(`Item #${i + 1}:`, {
-      title: item.title,
-      variant_title: item.variant_title,
-      variant_id: variantId,
-      quantity: qty,
-      maya_plan_id: mayaPlanId,
-    });
+    // 2) Create eSIM(s)
+    const items = order?.line_items || [];
+    console.log("🧾 LINE ITEMS:", items.length);
 
-    if (!mayaPlanId) {
-      console.error("❌ Missing metafield custom.maya_plan_id for variant:", variantId);
-      continue;
-    }
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const variantId = String(item.variant_id);
+      const qty = Number(item.quantity || 1);
 
-    for (let q = 0; q < qty; q++) {
+      let mayaPlanId = null;
       try {
-        const mayaResp = await createMayaEsim({
-          planTypeId: mayaPlanId,
-          customerId: mayaCustomerId,
-          tag: String(orderId || ""), // traceability
-        });
-
-        console.log("✅ Maya eSIM created (attached to customer):", {
-          maya_customer_id: mayaCustomerId,
-          maya_esim_uid: mayaResp?.esim?.uid,
-          iccid: mayaResp?.esim?.iccid,
-          activation_code: mayaResp?.esim?.activation_code,
-          manual_code: mayaResp?.esim?.manual_code,
-          smdp_address: mayaResp?.esim?.smdp_address,
-          apn: mayaResp?.esim?.apn,
-        });
-
-        // 3) Email QR code to customer (Resend)
-        try {
-          await sendEsimEmail({
-            to: email,
-            firstName,
-            orderId,
-            activationCode: mayaResp?.esim?.activation_code,
-            manualCode: mayaResp?.esim?.manual_code,
-            smdpAddress: mayaResp?.esim?.smdp_address,
-            apn: mayaResp?.esim?.apn,
-          });
-        } catch (e) {
-          console.error("❌ Failed to send eSIM email:", e?.message || e);
-        }
+        mayaPlanId = await getMayaPlanIdForVariant(variantId);
       } catch (e) {
-        console.error("❌ Maya provisioning error:", e.message);
+        console.error("❌ Failed to fetch metafield for variant:", variantId, e?.message || e);
+      }
+
+      console.log(`Item #${i + 1}:`, {
+        title: item.title,
+        variant_title: item.variant_title,
+        variant_id: variantId,
+        quantity: qty,
+        maya_plan_id: mayaPlanId,
+      });
+
+      if (!mayaPlanId) {
+        console.error("❌ Missing metafield custom.maya_plan_id for variant:", variantId);
+        continue;
+      }
+
+      for (let q = 0; q < qty; q++) {
+        try {
+          const mayaResp = await createMayaEsim({
+            planTypeId: mayaPlanId,
+            customerId: mayaCustomerId,
+            tag: String(orderId || ""),
+          });
+
+          console.log("✅ Maya eSIM created:", {
+            maya_customer_id: mayaCustomerId,
+            maya_esim_uid: mayaResp?.esim?.uid,
+            iccid: mayaResp?.esim?.iccid,
+          });
+
+          await saveEsimToOrder(orderId, {
+            iccid: mayaResp?.esim?.iccid,
+            esimUid: mayaResp?.esim?.uid,
+          });
+
+          try {
+            await sendEsimEmail({
+              to: email,
+              firstName,
+              orderId,
+              activationCode: mayaResp?.esim?.activation_code,
+              manualCode: mayaResp?.esim?.manual_code,
+              smdpAddress: mayaResp?.esim?.smdp_address,
+              apn: mayaResp?.esim?.apn,
+            });
+          } catch (e) {
+            console.error("❌ Failed to send eSIM email:", e?.message || e);
+          }
+        } catch (e) {
+          console.error("❌ Maya provisioning error:", e?.message || e);
+        }
+      }
+    }
+
+    completed = true;
+  } catch (e) {
+    console.error("❌ Webhook handler crashed:", e?.message || e);
+  } finally {
+    // ✅ release lock ALWAYS
+    if (lockToken) {
+      try {
+        await releaseOrderProcessingLock(orderId, lockToken);
+        console.log("🔓 Lock released:", { orderId });
+      } catch (e) {
+        console.error("❌ Failed to release processing lock:", e?.message || e);
+      }
+    }
+
+    // ✅ mark processed only if completed
+    if (completed) {
+      try {
+        await markOrderProcessed(orderId);
+        console.log("✅ Order marked as processed in Shopify:", orderId);
+      } catch (e) {
+        console.error("❌ Failed to mark order processed:", e?.message || e);
       }
     }
   }
 
   return res.status(200).send("OK");
 });
-
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Listening on ${port}`));

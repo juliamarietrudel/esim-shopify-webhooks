@@ -19,6 +19,8 @@ import {
   usageAlertKey,
   getUsageAlertFlag,
   markUsageAlertSent,
+  tryAcquireOrderProcessingLock,
+  releaseOrderProcessingLock,
 } from "./services/shopify.js";
 
 import {
@@ -856,6 +858,9 @@ function verifyShopifyWebhook(req) {
 // -----------------------------
 // Webhook: orders/paid
 // -----------------------------
+// -----------------------------
+// Webhook: orders/paid
+// -----------------------------
 app.post("/webhooks/order-paid", async (req, res) => {
   const ok = verifyShopifyWebhook(req);
   console.log("🟨 Webhook shop =", req.get("x-shopify-shop-domain"));
@@ -870,7 +875,6 @@ app.post("/webhooks/order-paid", async (req, res) => {
   console.log("---- WEBHOOK DEBUG END ----");
 
   if (!ok) return res.status(401).send("Invalid signature");
-
 
   fs.writeFileSync("last-webhook.json", req.rawBody);
   console.log("✅ Saved last webhook payload to last-webhook.json");
@@ -899,432 +903,459 @@ app.post("/webhooks/order-paid", async (req, res) => {
     console.error("⚠️ Could not read order processed flag:", e?.message || e);
   }
 
-  let shouldMarkProcessed = true;
+  // ✅ CONCURRENCY LOCK (token-based)
+  let lockToken = null;
+  let lockAcquired = false;
 
-  // 1) Get or create Maya customer id
-  let mayaCustomerId = null;
-  const shopifyCustomerId = order?.customer?.id || order?.customer_id || null;
-  console.log("Shopify customer id on order:", shopifyCustomerId);
+  try {
+    const lock = await tryAcquireOrderProcessingLock(orderId);
 
-  if (shopifyCustomerId) {
-    try {
-      const existing = await getMayaCustomerIdFromShopifyCustomer(shopifyCustomerId);
-      const existingTrimmed = (existing || "").trim();
-      if (existingTrimmed) {
-        mayaCustomerId = existingTrimmed;
-        console.log("✅ Reusing Maya customer id from Shopify customer metafield:", mayaCustomerId);
-      }
-    } catch (e) {
-      console.error("❌ Could not read Shopify customer metafield:", e.message);
-    }
-  }
-
-  if (!mayaCustomerId) {
-    try {
-      const created = await createMayaCustomer({
-        email,
-        firstName,
-        lastName,
-        countryIso2,
-        tag: String(orderId)
-      });
-
-      mayaCustomerId = created.customerId;
-      console.log("✅ Maya customer created:", mayaCustomerId);
-
-      if (shopifyCustomerId) {
-        try {
-          await saveMayaCustomerIdToShopifyCustomer(shopifyCustomerId, mayaCustomerId);
-          console.log("✅ Saved Maya customer id to Shopify customer metafield:", {
-            shopifyCustomerId,
-            mayaCustomerId,
-          });
-        } catch (e) {
-          console.error("❌ Failed saving Maya customer id to Shopify:", e.message);
-        }
-      } else {
-        console.warn("⚠️ No Shopify customer on order (guest checkout).");
-      }
-    } catch (e) {
-      console.error("❌ Maya customer creation failed:", e.message);
-      shouldMarkProcessed = false;
+    if (!lock?.acquired) {
+      console.log("🛑 Order is already being processed by another webhook. Skipping.", { orderId });
       return res.status(200).send("OK");
     }
+
+    lockAcquired = true;
+    lockToken = lock.token;
+    console.log("🔒 Acquired processing lock:", { orderId, lockToken });
+  } catch (e) {
+    console.error("❌ Failed to acquire processing lock (skipping to avoid duplicates):", e?.message || e);
+    return res.status(200).send("OK");
   }
 
-  // 2) Process line items
-  const items = order?.line_items || [];
-  console.log("🧾 LINE ITEMS:", items.length);
+  // Everything below stays the same, but is wrapped in try/finally
+  let shouldMarkProcessed = true;
 
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    const variantId = String(item.variant_id);
-    const qty = Number(item.quantity || 1);
+  try {
+    // 1) Get or create Maya customer id
+    let mayaCustomerId = null;
+    const shopifyCustomerId = order?.customer?.id || order?.customer_id || null;
+    console.log("Shopify customer id on order:", shopifyCustomerId);
 
-    let mayaPlanId = null;
-    let productType = null;
-
-    try {
-      const cfg = await getVariantConfig(variantId);
-      mayaPlanId = cfg?.mayaPlanId || null;
-      productType = cfg?.productType || null;
-    } catch (e) {
-      console.error("❌ Failed to fetch config for variant:", variantId, e.message);
-      shouldMarkProcessed = false;
-      continue;
-    }
-
-    console.log(`Item #${i + 1}:`, {
-      title: item.title,
-      variant_title: item.variant_title,
-      variant_id: variantId,
-      quantity: qty,
-      maya_plan_id: mayaPlanId,
-      product_type: productType,
-    });
-
-    if (!mayaPlanId) {
-      console.error("❌ Missing metafield custom.maya_plan_id for variant:", variantId);
-      shouldMarkProcessed = false;
-      continue;
-    }
-
-    // -----------------------------
-    // RECHARGE (TOP UP)
-    // -----------------------------
-    if (productType === "recharge") {
-      console.log("🔄 Entering TOP-UP flow", { orderId, variantId, qty, mayaPlanId, mayaCustomerId });
-
-      if (!mayaCustomerId) {
-        shouldMarkProcessed = false;
-        await sendAdminAlertEmail({
-          subject: `⚠️ Top-up received but no Maya customer id (Order #${orderId})`,
-          html: `
-            <p>Order contains a <b>top-up</b>, but we could not resolve a Maya customer id.</p>
-            <ul>
-              <li><b>Order ID</b>: ${orderId}</li>
-              <li><b>Email</b>: ${email || ""}</li>
-              <li><b>Variant ID</b>: ${variantId}</li>
-              <li><b>Maya plan_type_id</b>: ${mayaPlanId}</li>
-            </ul>
-            <p>No action was taken. Please contact the customer.</p>
-          `,
-        });
-        continue;
-      }
-
-      let mayaDetails = null;
+    if (shopifyCustomerId) {
       try {
-        mayaDetails = await getMayaCustomerDetails(mayaCustomerId);
+        const existing = await getMayaCustomerIdFromShopifyCustomer(shopifyCustomerId);
+        const existingTrimmed = (existing || "").trim();
+        if (existingTrimmed) {
+          mayaCustomerId = existingTrimmed;
+          console.log("✅ Reusing Maya customer id from Shopify customer metafield:", mayaCustomerId);
+        }
       } catch (e) {
-        shouldMarkProcessed = false;
-        await sendAdminAlertEmail({
-          subject: `⚠️ Top-up failed: could not fetch Maya customer (Order #${orderId})`,
-          html: `
-            <p>Order contains a <b>top-up</b>, but fetching the Maya customer failed.</p>
-            <ul>
-              <li><b>Order ID</b>: ${orderId}</li>
-              <li><b>Email</b>: ${email || ""}</li>
-              <li><b>Maya customer id</b>: ${mayaCustomerId}</li>
-              <li><b>Variant ID</b>: ${variantId}</li>
-              <li><b>Maya plan_type_id</b>: ${mayaPlanId}</li>
-              <li><b>Error</b>: ${(e && e.message) || e}</li>
-            </ul>
-            <p>No action was taken.</p>
-          `,
+        console.error("❌ Could not read Shopify customer metafield:", e.message);
+      }
+    }
+
+    if (!mayaCustomerId) {
+      try {
+        const created = await createMayaCustomer({
+          email,
+          firstName,
+          lastName,
+          countryIso2,
+          tag: String(orderId),
         });
+
+        mayaCustomerId = created.customerId;
+        console.log("✅ Maya customer created:", mayaCustomerId);
+
+        if (shopifyCustomerId) {
+          try {
+            await saveMayaCustomerIdToShopifyCustomer(shopifyCustomerId, mayaCustomerId);
+            console.log("✅ Saved Maya customer id to Shopify customer metafield:", {
+              shopifyCustomerId,
+              mayaCustomerId,
+            });
+          } catch (e) {
+            console.error("❌ Failed saving Maya customer id to Shopify:", e.message);
+          }
+        } else {
+          console.warn("⚠️ No Shopify customer on order (guest checkout).");
+        }
+      } catch (e) {
+        console.error("❌ Maya customer creation failed:", e.message);
+        shouldMarkProcessed = false;
+        return res.status(200).send("OK");
+      }
+    }
+
+    // 2) Process line items
+    const items = order?.line_items || [];
+    console.log("🧾 LINE ITEMS:", items.length);
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const variantId = String(item.variant_id);
+      const qty = Number(item.quantity || 1);
+
+      let mayaPlanId = null;
+      let productType = null;
+
+      try {
+        const cfg = await getVariantConfig(variantId);
+        mayaPlanId = cfg?.mayaPlanId || null;
+        productType = cfg?.productType || null;
+      } catch (e) {
+        console.error("❌ Failed to fetch config for variant:", variantId, e.message);
+        shouldMarkProcessed = false;
         continue;
       }
 
-      const customer = mayaDetails?.customer;
-      const esims = Array.isArray(customer?.esims) ? customer.esims : [];
-      const destinationShopify = String(item.title || "").trim();
-      console.log("👤 Maya customer loaded", { mayaCustomerId, esims_count: esims.length });
-
-      const candidateEsims = esims.filter((e) => {
-        const state = String(e?.state || "").toLowerCase();
-        const service = String(e?.service_status || "").toLowerCase();
-        if (state.includes("terminated") || state.includes("cancel")) return false;
-        if (service.includes("terminated") || service.includes("cancel")) return false;
-        return true;
+      console.log(`Item #${i + 1}:`, {
+        title: item.title,
+        variant_title: item.variant_title,
+        variant_id: variantId,
+        quantity: qty,
+        maya_plan_id: mayaPlanId,
+        product_type: productType,
       });
 
-      console.log("📱 candidateEsims:", candidateEsims.map(e => ({
-        iccid: e.iccid,
-        uid: e.uid,
-        state: e.state,
-        service_status: e.service_status,
-        plans_count: Array.isArray(e.plans) ? e.plans.length : 0,
-      })));
+      if (!mayaPlanId) {
+        console.error("❌ Missing metafield custom.maya_plan_id for variant:", variantId);
+        shouldMarkProcessed = false;
+        continue;
+      }
 
-      // Helper functions for plan selection
-      function isActivated_(plan) {
-        const da = String(plan?.date_activated || "");
-        return da && da !== "0000-00-00 00:00:00";
-      }
-      function isNetActive_(plan) {
-        const ns = String(plan?.network_status || "").toUpperCase();
-        return ns === "ACTIVE" || ns === "ENABLED";
-      }
-      function isNotEnded_(plan) {
-        const end = Date.parse(String(plan?.end_time || ""));
-        if (!Number.isFinite(end)) return true; // si Maya ne fournit pas end_time, on considère OK
-        return end > Date.now();
-      }
-      function toInt_(v) {
-        const n = Number(v);
-        return Number.isFinite(n) ? n : NaN;
-      }
-      function timeValue_(s) {
-        const t = Date.parse(String(s || ""));
-        return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
-      }
-      // Accent/case-insensitive text normalization
-      function normalizeText_(s) {
-        return String(s || "")
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .trim()
-          .toLowerCase();
-      }
-      // Essaie de deviner si un plan Maya correspond à la destination (par son nom)
-      function matchesDestination_(plan, destination) {
-        const dest = normalizeText_(destination);
-        if (!dest) return false;
+      // -----------------------------
+      // RECHARGE (TOP UP)
+      // -----------------------------
+      if (productType === "recharge") {
+        console.log("🔄 Entering TOP-UP flow", { orderId, variantId, qty, mayaPlanId, mayaCustomerId });
 
-        const planName = normalizeText_(
-          plan?.plan_type?.name || plan?.plan_type_name || plan?.name || ""
+        if (!mayaCustomerId) {
+          shouldMarkProcessed = false;
+          await sendAdminAlertEmail({
+            subject: `⚠️ Top-up received but no Maya customer id (Order #${orderId})`,
+            html: `
+              <p>Order contains a <b>top-up</b>, but we could not resolve a Maya customer id.</p>
+              <ul>
+                <li><b>Order ID</b>: ${orderId}</li>
+                <li><b>Email</b>: ${email || ""}</li>
+                <li><b>Variant ID</b>: ${variantId}</li>
+                <li><b>Maya plan_type_id</b>: ${mayaPlanId}</li>
+              </ul>
+              <p>No action was taken. Please contact the customer.</p>
+            `,
+          });
+          continue;
+        }
+
+        let mayaDetails = null;
+        try {
+          mayaDetails = await getMayaCustomerDetails(mayaCustomerId);
+        } catch (e) {
+          shouldMarkProcessed = false;
+          await sendAdminAlertEmail({
+            subject: `⚠️ Top-up failed: could not fetch Maya customer (Order #${orderId})`,
+            html: `
+              <p>Order contains a <b>top-up</b>, but fetching the Maya customer failed.</p>
+              <ul>
+                <li><b>Order ID</b>: ${orderId}</li>
+                <li><b>Email</b>: ${email || ""}</li>
+                <li><b>Maya customer id</b>: ${mayaCustomerId}</li>
+                <li><b>Variant ID</b>: ${variantId}</li>
+                <li><b>Maya plan_type_id</b>: ${mayaPlanId}</li>
+                <li><b>Error</b>: ${(e && e.message) || e}</li>
+              </ul>
+              <p>No action was taken.</p>
+            `,
+          });
+          continue;
+        }
+
+        const customer = mayaDetails?.customer;
+        const esims = Array.isArray(customer?.esims) ? customer.esims : [];
+        const destinationShopify = String(item.title || "").trim();
+        console.log("👤 Maya customer loaded", { mayaCustomerId, esims_count: esims.length });
+
+        const candidateEsims = esims.filter((e) => {
+          const state = String(e?.state || "").toLowerCase();
+          const service = String(e?.service_status || "").toLowerCase();
+          if (state.includes("terminated") || state.includes("cancel")) return false;
+          if (service.includes("terminated") || service.includes("cancel")) return false;
+          return true;
+        });
+
+        console.log(
+          "📱 candidateEsims:",
+          candidateEsims.map((e) => ({
+            iccid: e.iccid,
+            uid: e.uid,
+            state: e.state,
+            service_status: e.service_status,
+            plans_count: Array.isArray(e.plans) ? e.plans.length : 0,
+          }))
         );
 
-        return planName.includes(dest);
-      }
-
-      // 1) Collecte tous les plans candidates sur des eSIMs "valides"
-      const planCandidates = [];
-      for (const e of candidateEsims) {
-        const plans = Array.isArray(e?.plans) ? e.plans : [];
-        for (const p of plans) {
-          planCandidates.push({
-            iccid: e?.iccid,
-            esimUid: e?.uid,
-            planId: p?.id,
-            planTypeId: p?.plan_type?.id,
-            planTypeName: p?.plan_type?.name,
-            bytesRemaining: toInt_(p?.data_bytes_remaining),
-            activated: isActivated_(p),
-            netActive: isNetActive_(p),
-            notEnded: isNotEnded_(p),
-            startTime: p?.start_time,
-            rawPlan: p,
-          });
+        function isActivated_(plan) {
+          const da = String(plan?.date_activated || "");
+          return da && da !== "0000-00-00 00:00:00";
         }
-      }
+        function isNetActive_(plan) {
+          const ns = String(plan?.network_status || "").toUpperCase();
+          return ns === "ACTIVE" || ns === "ENABLED";
+        }
+        function isNotEnded_(plan) {
+          const end = Date.parse(String(plan?.end_time || ""));
+          if (!Number.isFinite(end)) return true;
+          return end > Date.now();
+        }
+        function toInt_(v) {
+          const n = Number(v);
+          return Number.isFinite(n) ? n : NaN;
+        }
+        function timeValue_(s) {
+          const t = Date.parse(String(s || ""));
+          return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
+        }
+        function normalizeText_(s) {
+          return String(s || "")
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .trim()
+            .toLowerCase();
+        }
+        function matchesDestination_(plan, destination) {
+          const dest = normalizeText_(destination);
+          if (!dest) return false;
 
-      // 2) D’abord: match exact sur plan_type_id (comme avant)
-      let best = null;
-      const exact = planCandidates
-        .filter(c => c.planTypeId && normId(c.planTypeId) === normId(mayaPlanId))
-        .filter(c => c.activated && c.netActive && c.notEnded);
-
-      if (exact.length > 0) {
-        best = exact.sort((a, b) => {
-          // priorité: moins de data restante
-          const ra = Number.isFinite(a.bytesRemaining) ? a.bytesRemaining : Number.POSITIVE_INFINITY;
-          const rb = Number.isFinite(b.bytesRemaining) ? b.bytesRemaining : Number.POSITIVE_INFINITY;
-          if (ra !== rb) return ra - rb;
-          // puis plus ancien (startTime plus petit)
-          return timeValue_(a.startTime) - timeValue_(b.startTime);
-        })[0];
-      } else {
-        // 3) Fallback: même destination UNIQUEMENT, plan actif, peu importe la taille
-        const sameDest = planCandidates
-          .filter(c => matchesDestination_(c.rawPlan, destinationShopify))
-          .filter(c => c.activated && c.netActive && c.notEnded);
-        if (sameDest.length > 0) {
-          console.warn(
-            `⚠️ No exact plan_type match for top-up (${mayaPlanId}). Falling back to active eSIM in same destination: ${destinationShopify}`
+          const planName = normalizeText_(
+            plan?.plan_type?.name || plan?.plan_type_name || plan?.name || ""
           );
-          best = sameDest.sort((a, b) => {
-            // même heuristique
+
+          return planName.includes(dest);
+        }
+
+        const planCandidates = [];
+        for (const e of candidateEsims) {
+          const plans = Array.isArray(e?.plans) ? e.plans : [];
+          for (const p of plans) {
+            planCandidates.push({
+              iccid: e?.iccid,
+              esimUid: e?.uid,
+              planId: p?.id,
+              planTypeId: p?.plan_type?.id,
+              planTypeName: p?.plan_type?.name,
+              bytesRemaining: toInt_(p?.data_bytes_remaining),
+              activated: isActivated_(p),
+              netActive: isNetActive_(p),
+              notEnded: isNotEnded_(p),
+              startTime: p?.start_time,
+              rawPlan: p,
+            });
+          }
+        }
+
+        let best = null;
+        const exact = planCandidates
+          .filter((c) => c.planTypeId && normId(c.planTypeId) === normId(mayaPlanId))
+          .filter((c) => c.activated && c.netActive && c.notEnded);
+
+        if (exact.length > 0) {
+          best = exact.sort((a, b) => {
             const ra = Number.isFinite(a.bytesRemaining) ? a.bytesRemaining : Number.POSITIVE_INFINITY;
             const rb = Number.isFinite(b.bytesRemaining) ? b.bytesRemaining : Number.POSITIVE_INFINITY;
             if (ra !== rb) return ra - rb;
             return timeValue_(a.startTime) - timeValue_(b.startTime);
           })[0];
+        } else {
+          const sameDest = planCandidates
+            .filter((c) => matchesDestination_(c.rawPlan, destinationShopify))
+            .filter((c) => c.activated && c.netActive && c.notEnded);
+
+          if (sameDest.length > 0) {
+            console.warn(
+              `⚠️ No exact plan_type match for top-up (${mayaPlanId}). Falling back to active eSIM in same destination: ${destinationShopify}`
+            );
+            best = sameDest.sort((a, b) => {
+              const ra = Number.isFinite(a.bytesRemaining) ? a.bytesRemaining : Number.POSITIVE_INFINITY;
+              const rb = Number.isFinite(b.bytesRemaining) ? b.bytesRemaining : Number.POSITIVE_INFINITY;
+              if (ra !== rb) return ra - rb;
+              return timeValue_(a.startTime) - timeValue_(b.startTime);
+            })[0];
+          }
         }
-      }
-      // 4) Si aucun best: on envoie email admin et on stoppe
-      if (!best?.iccid) {
-        shouldMarkProcessed = false;
-        await sendAdminAlertEmail({
-          subject: `⚠️ Top-up reçu mais aucune eSIM ACTIVE trouvée pour la destination (Order #${orderId})`,
-          html: `
-            <p>Le client a acheté une <b>recharge</b>, mais on n'a trouvé <b>aucune eSIM active</b> correspondant à la destination <b>${esc(destinationShopify)}</b>.</p>
-            <ul>
-              <li><b>Order ID</b>: ${orderId}</li>
-              <li><b>Email</b>: ${esc(email || "")}</li>
-              <li><b>Maya customer id</b>: ${esc(mayaCustomerId)}</li>
-              <li><b>Destination</b>: ${esc(destinationShopify)}</li>
-              <li><b>Maya plan_type_id (top-up)</b>: ${esc(mayaPlanId)}</li>
-            </ul>
-            <p><b>Action:</b> contacter le client / créer une eSIM manuellement si nécessaire.</p>
-          `,
+
+        if (!best?.iccid) {
+          shouldMarkProcessed = false;
+          await sendAdminAlertEmail({
+            subject: `⚠️ Top-up reçu mais aucune eSIM ACTIVE trouvée pour la destination (Order #${orderId})`,
+            html: `
+              <p>Le client a acheté une <b>recharge</b>, mais on n'a trouvé <b>aucune eSIM active</b> correspondant à la destination <b>${esc(destinationShopify)}</b>.</p>
+              <ul>
+                <li><b>Order ID</b>: ${orderId}</li>
+                <li><b>Email</b>: ${esc(email || "")}</li>
+                <li><b>Maya customer id</b>: ${esc(mayaCustomerId)}</li>
+                <li><b>Destination</b>: ${esc(destinationShopify)}</li>
+                <li><b>Maya plan_type_id (top-up)</b>: ${esc(mayaPlanId)}</li>
+              </ul>
+              <p><b>Action:</b> contacter le client / créer une eSIM manuellement si nécessaire.</p>
+            `,
+          });
+          continue;
+        }
+
+        console.log("🔁 Top-up target chosen:", {
+          iccid: best.iccid,
+          esim_uid: best.esimUid,
+          matched_plan_id: best.planId,
+          bytes_remaining: best.bytesRemaining,
+          activated: best.activated,
+          start_time: best.startTime,
+          plan_type_id_from_shopify: mayaPlanId,
+          plan_type_id_from_maya: best.planTypeId,
         });
+
+        for (let q = 0; q < qty; q++) {
+          const topUpPlanTypeId = best.planTypeId || mayaPlanId;
+          try {
+            const topupResp = await createMayaTopUp({
+              iccid: best.iccid,
+              planTypeId: topUpPlanTypeId,
+            });
+            console.log("✅ Maya top-up created:", {
+              iccid: best.iccid,
+              plan_type_id: topUpPlanTypeId,
+              new_plan_id: topupResp?.plan?.id,
+              request_id: topupResp?.request_id,
+            });
+          } catch (e) {
+            shouldMarkProcessed = false;
+            console.error("❌ Maya top-up error:", e.message);
+            await sendAdminAlertEmail({
+              subject: `❌ Top-up failed in Maya (Order #${orderId})`,
+              html: `
+                <p>Creating a Maya top-up failed.</p>
+                <ul>
+                  <li><b>Order ID</b>: ${orderId}</li>
+                  <li><b>Email</b>: ${email || ""}</li>
+                  <li><b>Maya customer id</b>: ${mayaCustomerId}</li>
+                  <li><b>ICCID</b>: ${best.iccid}</li>
+                  <li><b>plan_type_id</b>: ${topUpPlanTypeId}</li>
+                  <li><b>Error</b>: ${(e && e.message) || e}</li>
+                </ul>
+              `,
+            });
+          }
+        }
+
+        try {
+          await sendTopUpEmail({ to: email, firstName, orderId });
+        } catch (e) {
+          console.error("❌ Failed to send top-up email:", e?.message || e);
+        }
         continue;
       }
 
-      // Log and use chosen best only once
-      console.log("🔁 Top-up target chosen:", {
-        iccid: best.iccid,
-        esim_uid: best.esimUid,
-        matched_plan_id: best.planId,
-        bytes_remaining: best.bytesRemaining,
-        activated: best.activated,
-        start_time: best.startTime,
-        plan_type_id_from_shopify: mayaPlanId,
-        plan_type_id_from_maya: best.planTypeId,
-      });
-
+      // -----------------------------
+      // NORMAL eSIM purchase: create eSIM(s)
+      // -----------------------------
       for (let q = 0; q < qty; q++) {
-        const topUpPlanTypeId = best.planTypeId || mayaPlanId;
         try {
-          const topupResp = await createMayaTopUp({
-            iccid: best.iccid,
-            planTypeId: topUpPlanTypeId,
-          });
-          console.log("✅ Maya top-up created:", {
-            iccid: best.iccid,
-            plan_type_id: topUpPlanTypeId,
-            new_plan_id: topupResp?.plan?.id,
-            request_id: topupResp?.request_id,
-          });
-        } catch (e) {
-          shouldMarkProcessed = false;
-          console.error("❌ Maya top-up error:", e.message);
-          await sendAdminAlertEmail({
-            subject: `❌ Top-up failed in Maya (Order #${orderId})`,
-            html: `
-              <p>Creating a Maya top-up failed.</p>
-              <ul>
-                <li><b>Order ID</b>: ${orderId}</li>
-                <li><b>Email</b>: ${email || ""}</li>
-                <li><b>Maya customer id</b>: ${mayaCustomerId}</li>
-                <li><b>ICCID</b>: ${best.iccid}</li>
-                <li><b>plan_type_id</b>: ${topUpPlanTypeId}</li>
-                <li><b>Error</b>: ${(e && e.message) || e}</li>
-              </ul>
-            `,
-          });
-        }
-      }
-      // ✅ Send confirmation email for top-up (once per order)
-      try {
-        await sendTopUpEmail({ to: email, firstName, orderId });
-      } catch (e) {
-        console.error("❌ Failed to send top-up email:", e?.message || e);
-      }
-      continue;
-    }
-
-    // -----------------------------
-    // NORMAL eSIM purchase: create eSIM(s)
-    // -----------------------------
-    for (let q = 0; q < qty; q++) {
-      try {
-
           const baseTag = `${item.title}-${item.variant_title}`
-          .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // remove accents
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "-")
-          .replace(/^-|-$/g, "");
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-|-$/g, "");
 
-        const esimTag = qty > 1 ? `${baseTag}-${q + 1}` : baseTag;
+          const esimTag = qty > 1 ? `${baseTag}-${q + 1}` : baseTag;
 
-        const mayaResp = await createMayaEsim({
-          planTypeId: mayaPlanId,
-          customerId: mayaCustomerId,
-          tag: esimTag,
-        });
-
-        console.log("✅ Maya eSIM created:", {
-          maya_customer_id: mayaCustomerId,
-          maya_esim_uid: mayaResp?.esim?.uid,
-          iccid: mayaResp?.esim?.iccid,
-          activation_code: mayaResp?.esim?.activation_code,
-          manual_code: mayaResp?.esim?.manual_code,
-          smdp_address: mayaResp?.esim?.smdp_address,
-          apn: mayaResp?.esim?.apn,
-        });
-
-        try {
-          await saveEsimToOrder(orderId, {
-            iccid: mayaResp?.esim?.iccid,
-            esimUid: mayaResp?.esim?.uid,
+          const mayaResp = await createMayaEsim({
+            planTypeId: mayaPlanId,
+            customerId: mayaCustomerId,
+            tag: esimTag,
           });
-          console.log("✅ Saved eSIM info to Shopify order:", {
-            orderId,
-            iccid: mayaResp?.esim?.iccid,
-            esimUid: mayaResp?.esim?.uid,
-          });
-        } catch (e) {
-          console.error("❌ Failed to save eSIM info to Shopify order:", e?.message || e);
-          console.warn("🚨 MANUAL ACTION REQUIRED — Shopify save failed for order", orderId);
-          shouldMarkProcessed = false;
-          try {
-          await sendManualActionEmail({
-            orderId,
-            shopDomain: req.get("X-Shopify-Shop-Domain"),
-            customerEmail: email,
-            customerName: `${firstName || ""} ${lastName || ""}`.trim(),
-            variantId,
-            mayaPlanId,
-            iccid: mayaResp?.esim?.iccid,
-            esimUid: mayaResp?.esim?.uid,
-            error: e,
-          });
-        } catch (mailErr) {
-          console.error("❌ Failed to send manual-action email:", mailErr?.message || mailErr);
-        }
 
-        // IMPORTANT: don't mark processed so it doesn't get "completed" silently
-        shouldMarkProcessed = false;
-        }
-
-        try {
-          await sendEsimEmail({
-            to: email,
-            firstName,
-            orderId,
-            activationCode: mayaResp?.esim?.activation_code,
-            manualCode: mayaResp?.esim?.manual_code,
-            smdpAddress: mayaResp?.esim?.smdp_address,
+          console.log("✅ Maya eSIM created:", {
+            maya_customer_id: mayaCustomerId,
+            maya_esim_uid: mayaResp?.esim?.uid,
+            iccid: mayaResp?.esim?.iccid,
+            activation_code: mayaResp?.esim?.activation_code,
+            manual_code: mayaResp?.esim?.manual_code,
+            smdp_address: mayaResp?.esim?.smdp_address,
             apn: mayaResp?.esim?.apn,
-            planName: item.variant_title,
-            iccid: mayaResp?.esim?.iccid,
-            country: item.title,
           });
+
+          try {
+            await saveEsimToOrder(orderId, {
+              iccid: mayaResp?.esim?.iccid,
+              esimUid: mayaResp?.esim?.uid,
+            });
+            console.log("✅ Saved eSIM info to Shopify order:", {
+              orderId,
+              iccid: mayaResp?.esim?.iccid,
+              esimUid: mayaResp?.esim?.uid,
+            });
+          } catch (e) {
+            console.error("❌ Failed to save eSIM info to Shopify order:", e?.message || e);
+            console.warn("🚨 MANUAL ACTION REQUIRED — Shopify save failed for order", orderId);
+            shouldMarkProcessed = false;
+
+            try {
+              await sendManualActionEmail({
+                orderId,
+                shopDomain: req.get("X-Shopify-Shop-Domain"),
+                customerEmail: email,
+                customerName: `${firstName || ""} ${lastName || ""}`.trim(),
+                variantId,
+                mayaPlanId,
+                iccid: mayaResp?.esim?.iccid,
+                esimUid: mayaResp?.esim?.uid,
+                error: e,
+              });
+            } catch (mailErr) {
+              console.error("❌ Failed to send manual-action email:", mailErr?.message || mailErr);
+            }
+
+            shouldMarkProcessed = false;
+          }
+
+          try {
+            await sendEsimEmail({
+              to: email,
+              firstName,
+              orderId,
+              activationCode: mayaResp?.esim?.activation_code,
+              manualCode: mayaResp?.esim?.manual_code,
+              smdpAddress: mayaResp?.esim?.smdp_address,
+              apn: mayaResp?.esim?.apn,
+              planName: item.variant_title,
+              iccid: mayaResp?.esim?.iccid,
+              country: item.title,
+            });
+          } catch (e) {
+            console.error("❌ Failed to send eSIM email:", e?.message || e);
+          }
         } catch (e) {
-          console.error("❌ Failed to send eSIM email:", e?.message || e);
+          shouldMarkProcessed = false;
+          console.error("❌ Maya provisioning error:", e.message);
         }
+      }
+    }
+
+    if (shouldMarkProcessed) {
+      try {
+        await markOrderProcessed(orderId);
+        console.log("✅ Order marked as processed in Shopify:", orderId);
       } catch (e) {
-        shouldMarkProcessed = false;
-        console.error("❌ Maya provisioning error:", e.message);
+        console.error("❌ Failed to mark order as processed:", e?.message || e);
+      }
+    } else {
+      console.warn("⚠️ Not marking order as processed (some steps failed):", orderId);
+    }
+
+    return res.status(200).send("OK");
+  } finally {
+    // 🔓 Always release the lock if we acquired it
+    if (lockAcquired && lockToken) {
+      try {
+        const released = await releaseOrderProcessingLock(orderId, lockToken);
+        console.log("🔓 Released processing lock:", { orderId, released });
+      } catch (e) {
+        console.error("❌ Failed to release processing lock:", e?.message || e);
       }
     }
   }
-
-  if (shouldMarkProcessed) {
-    try {
-      await markOrderProcessed(orderId);
-      console.log("✅ Order marked as processed in Shopify:", orderId);
-    } catch (e) {
-      console.error("❌ Failed to mark order as processed:", e?.message || e);
-    }
-  } else {
-    console.warn("⚠️ Not marking order as processed (some steps failed):", orderId);
-  }
-
-  return res.status(200).send("OK");
 });
 
 // -----------------------------

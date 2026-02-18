@@ -1,5 +1,6 @@
 // services/shopify.js
 import { safeFetch } from "../utils/http.js";
+import crypto from "crypto";
 
 export function shopifyGraphqlUrl() {
   const shopRaw = process.env.SHOPIFY_SHOP_DOMAIN;
@@ -199,8 +200,59 @@ export async function getOrderProcessedFlag(orderId) {
   };
 }
 
-export async function markOrderProcessed(orderId) {
+// ---------- Order processing LOCK (prevents concurrent webhooks) ----------
+// Uses a token so we can confirm who owns the lock.
+// Also supports stale lock takeover (TTL).
+
+const LOCK_TTL_MS = Number(process.env.MAYA_LOCK_TTL_MS || 15 * 60 * 1000); // 15 min default
+
+function isStale(isoDate) {
+  if (!isoDate) return true;
+  const t = Date.parse(isoDate);
+  if (Number.isNaN(t)) return true;
+  return Date.now() - t > LOCK_TTL_MS;
+}
+
+export async function getOrderProcessingLock(orderId) {
   const gid = `gid://shopify/Order/${orderId}`;
+
+  const query = `
+    query ($id: ID!) {
+      order(id: $id) {
+        processing: metafield(namespace: "custom", key: "maya_processing") { value }
+        processingAt: metafield(namespace: "custom", key: "maya_processing_at") { value }
+        processingToken: metafield(namespace: "custom", key: "maya_processing_token") { value }
+      }
+    }
+  `;
+
+  const json = await shopifyGraphql(query, { id: gid });
+  const order = json?.data?.order;
+
+  const processing =
+    String(order?.processing?.value || "").trim().toLowerCase() === "true";
+
+  return {
+    processing,
+    processingAt: order?.processingAt?.value || null,
+    processingToken: order?.processingToken?.value || null,
+    stale: processing ? isStale(order?.processingAt?.value) : false,
+  };
+}
+
+export async function tryAcquireOrderProcessingLock(orderId) {
+  const gid = `gid://shopify/Order/${orderId}`;
+
+  // Read current lock
+  const before = await getOrderProcessingLock(orderId);
+
+  // If locked and not stale -> do not acquire
+  if (before.processing && !before.stale) {
+    return { acquired: false, reason: "locked" };
+  }
+
+  // If locked but stale -> we can take over
+  const token = crypto.randomUUID();
   const nowIso = new Date().toISOString();
 
   const mutation = `
@@ -213,32 +265,77 @@ export async function markOrderProcessed(orderId) {
 
   const variables = {
     metafields: [
+      { ownerId: gid, namespace: "custom", key: "maya_processing", type: "single_line_text_field", value: "true" },
+      { ownerId: gid, namespace: "custom", key: "maya_processing_token", type: "single_line_text_field", value: token },
+      { ownerId: gid, namespace: "custom", key: "maya_processing_at", type: "date_time", value: nowIso },
+    ],
+  };
+
+  await shopifyGraphql(mutation, variables);
+
+  // ✅ Verify we own the lock (prevents double-provision on race)
+  const after = await getOrderProcessingLock(orderId);
+  const weOwnIt =
+    after.processing === true && String(after.processingToken || "") === String(token);
+
+  if (!weOwnIt) {
+    return { acquired: false, reason: "lost_race" };
+  }
+
+  return { acquired: true, token };
+}
+
+// ---------- Order processing LOCK (prevents concurrent webhooks) ----------
+
+export async function releaseOrderProcessingLock(orderId, token) {
+  const gid = `gid://shopify/Order/${orderId}`;
+
+  const query = `
+    query ($id: ID!) {
+      order(id: $id) {
+        token: metafield(namespace:"custom", key:"maya_processing_token") { value }
+        processing: metafield(namespace:"custom", key:"maya_processing") { value }
+      }
+    }
+  `;
+
+  const json = await shopifyGraphql(query, { id: gid });
+  const currentToken = String(json?.data?.order?.token?.value || "");
+  const processing =
+    String(json?.data?.order?.processing?.value || "").toLowerCase() === "true";
+
+  if (!processing) return { released: false, reason: "not_locked" };
+  if (currentToken !== token) return { released: false, reason: "token_mismatch" };
+
+  const mutation = `
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) { userErrors { field message } }
+    }
+  `;
+
+  // ✅ On ne touche pas maya_processing_at ici (c’est la date de lock, pas de release)
+  const variables = {
+    metafields: [
       {
         ownerId: gid,
         namespace: "custom",
-        key: "maya_processed",
+        key: "maya_processing",
         type: "single_line_text_field",
-        value: "true",
+        value: "false",
       },
       {
         ownerId: gid,
         namespace: "custom",
-        key: "maya_processed_at",
-        type: "date_time",
-        value: nowIso,
+        key: "maya_processing_token",
+        type: "single_line_text_field",
+        value: "",
       },
     ],
   };
 
-  const json = await shopifyGraphql(mutation, variables);
+  await shopifyGraphql(mutation, variables);
 
-  const userErrors = json?.data?.metafieldsSet?.userErrors || [];
-  if (userErrors.length) {
-    console.error("❌ markOrderProcessed userErrors:", { orderId, userErrors });
-    throw new Error(userErrors[0]?.message || "Failed to write maya_processed metafields");
-  }
-
-  return true;
+  return { released: true };
 }
 
 // ---------- Order eSIM list (JSON) ----------
@@ -259,6 +356,7 @@ export async function getEsimsJsonFromOrder(orderId) {
   const raw = json?.data?.order?.esims?.value;
 
   if (!raw) return [];
+
   try {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
@@ -272,13 +370,11 @@ export async function appendEsimToOrderEsimsJson(orderId, { iccid, uid } = {}) {
   if (!iccid && !uid) return true;
 
   const gid = `gid://shopify/Order/${orderId}`;
-
   const current = await getEsimsJsonFromOrder(orderId);
 
   const cleanIccid = String(iccid || "").trim();
   const cleanUid = String(uid || "").trim();
 
-  // avoid duplicates (by iccid if present, else by uid)
   const exists = current.some((e) => {
     const eIccid = String(e?.iccid || "").trim();
     const eUid = String(e?.uid || "").trim();
@@ -304,14 +400,14 @@ export async function appendEsimToOrderEsimsJson(orderId, { iccid, uid } = {}) {
         ownerId: gid,
         namespace: "custom",
         key: ESIMS_JSON_KEY,
-        type: "multi_line_text_field",
+        type: "json",
         value: JSON.stringify(next),
       },
     ],
   };
 
-  const json = await shopifyGraphql(mutation, variables);
-  const userErrors = json?.data?.metafieldsSet?.userErrors || [];
+  const result = await shopifyGraphql(mutation, variables);
+  const userErrors = result?.data?.metafieldsSet?.userErrors || [];
   if (userErrors.length) {
     throw new Error(userErrors[0]?.message || "Failed to write maya_esims_json");
   }
