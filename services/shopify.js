@@ -602,7 +602,7 @@ export async function markOrderProcessed(orderId) {
         ownerId: gid,
         namespace: "custom",
         key: "maya_processed",
-        type: "single_line_text_field",
+        type: "boolean",
         value: "true",
       },
       {
