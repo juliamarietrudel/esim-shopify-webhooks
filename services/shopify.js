@@ -265,7 +265,7 @@ export async function tryAcquireOrderProcessingLock(orderId) {
 
   const variables = {
     metafields: [
-      { ownerId: gid, namespace: "custom", key: "maya_processing", type: "single_line_text_field", value: "true" },
+      { ownerId: gid, namespace: "custom", key: "maya_processing", type: "boolean", value: "true" },
       { ownerId: gid, namespace: "custom", key: "maya_processing_token", type: "single_line_text_field", value: token },
       { ownerId: gid, namespace: "custom", key: "maya_processing_at", type: "date_time", value: nowIso },
     ],
@@ -320,7 +320,7 @@ export async function releaseOrderProcessingLock(orderId, token) {
         ownerId: gid,
         namespace: "custom",
         key: "maya_processing",
-        type: "single_line_text_field",
+        type: "boolean",
         value: "false",
       },
       {
