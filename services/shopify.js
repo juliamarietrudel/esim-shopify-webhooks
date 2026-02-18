@@ -685,32 +685,29 @@ export async function markOrderProcessed(orderId) {
 export async function getOrdersWithEsims({ daysBack = 120 } = {}) {
   const sinceDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000)
     .toISOString()
-    .slice(0, 10); // YYYY-MM-DD
+    .slice(0, 10);
 
-  // Get orders that have either the new JSON list OR the old single field
   const searchQuery =
     `created_at:>='${sinceDate}' ` +
-    `(metafield:custom.${ESIMS_JSON_KEY} OR metafield:custom.maya_iccid)`;
+    `(metafield:custom.${ESIMS_JSON_KEY} OR metafield:custom.maya_iccid) ` +
+    `AND metafield:custom.maya_customer_id:*`;
 
   const query = `
-  query OrdersWithEsims($first: Int!, $query: String!) {
-    orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
-      edges {
-        node {
-          id
-          name
-
-          mayaCustomerId: metafield(namespace: "custom", key: "maya_customer_id") { value }
-
-          mayaIccid: metafield(namespace: "custom", key: "maya_iccid") { value }
-          mayaEsimUid: metafield(namespace: "custom", key: "maya_esim_uid") { value }
-
-          esimsJson: metafield(namespace: "custom", key: "${ESIMS_JSON_KEY}") { value }
+    query OrdersWithEsims($first: Int!, $query: String!) {
+      orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
+        edges {
+          node {
+            id
+            name
+            mayaCustomerId: metafield(namespace: "custom", key: "maya_customer_id") { value }
+            mayaIccid: metafield(namespace: "custom", key: "maya_iccid") { value }
+            mayaEsimUid: metafield(namespace: "custom", key: "maya_esim_uid") { value }
+            esimsJson: metafield(namespace: "custom", key: "${ESIMS_JSON_KEY}") { value }
+          }
         }
       }
     }
-  }
-`;
+  `;
 
   const json = await shopifyGraphql(query, { first: 100, query: searchQuery });
   const edges = json?.data?.orders?.edges || [];
@@ -723,31 +720,23 @@ export async function getOrdersWithEsims({ daysBack = 120 } = {}) {
 
       const mayaCustomerId = String(node?.mayaCustomerId?.value || "").trim() || null;
 
+      // ✅ REQUIRE maya_customer_id no matter what
+      if (!mayaCustomerId) return null;
+
       const singleIccid = (node?.mayaIccid?.value || "").trim();
       const singleUid = (node?.mayaEsimUid?.value || "").trim();
 
       const esims = parseEsimsJson(node?.esimsJson?.value)
-        .map((e) => ({
-          iccid: String(e?.iccid || "").trim(),
-          uid: String(e?.uid || "").trim(),
-        }))
-        .filter((e) => e.iccid); // keep only entries with iccid
+        .map((e) => ({ iccid: String(e?.iccid || "").trim(), uid: String(e?.uid || "").trim() }))
+        .filter((e) => e.iccid);
 
-      // Backward compatibility: if JSON empty but old field exists, use that
       const finalEsims = esims.length
         ? esims
         : (singleIccid ? [{ iccid: singleIccid, uid: singleUid || "" }] : []);
 
-      // If we can't email (no mayaCustomerId) the cron can't notify; but still return it
-      // so you can log/report missing IDs.
       if (!orderId || !finalEsims.length) return null;
 
-      return {
-        orderId,
-        orderName,
-        mayaCustomerId,
-        esims: finalEsims,
-      };
+      return { orderId, orderName, mayaCustomerId, esims: finalEsims };
     })
     .filter(Boolean);
 }
