@@ -584,7 +584,43 @@ function parseEsimsJson(raw) {
     return [];
   }
 }
+export async function markOrderProcessed(orderId) {
+  const gid = `gid://shopify/Order/${orderId}`;
+  const nowIso = new Date().toISOString();
 
+  const mutation = `
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        userErrors { field message }
+      }
+    }
+  `;
+
+  const variables = {
+    metafields: [
+      {
+        ownerId: gid,
+        namespace: "custom",
+        key: "maya_processed",
+        type: "single_line_text_field",
+        value: "true",
+      },
+      {
+        ownerId: gid,
+        namespace: "custom",
+        key: "maya_processed_at",
+        type: "date_time",
+        value: nowIso,
+      },
+    ],
+  };
+
+  const result = await shopifyGraphql(mutation, variables);
+  const userErrors = result?.data?.metafieldsSet?.userErrors || [];
+  if (userErrors.length) throw new Error(userErrors[0]?.message || "Failed to mark processed");
+
+  return true;
+}
 export async function getOrdersWithEsims({ daysBack = 120 } = {}) {
   const sinceDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000)
     .toISOString()
