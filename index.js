@@ -107,10 +107,10 @@ function formatEsimEmailHtml({
 
   // ✅ Remplace ces liens par tes URLs réelles
   const links = {
-    iphone: "https://quebecesim.ca/pages/installation-esim-iphone",
-    samsung: "https://quebecesim.ca/pages/installation-esim-samsung",
-    pixel: "https://quebecesim.ca/pages/installation-esim-google-pixel",
-    ipad: "https://quebecesim.ca/pages/installation-esim-ipad",
+    iphone: "https://quebecesim.ca/pages/installation-sur-appareil-iphone",
+    samsung: "https://quebecesim.ca/pages/installer-ma-esim-dans-mon-appareil-samsung",
+    pixel: "https://quebecesim.ca/pages/installation-sur-appareil-google-pixel",
+    ipad: "https://quebecesim.ca/pages/installation-sur-ipad-compatible-esim-seulement",
     conso: "https://quebecesim.ca/pages/comment-suivre-ma-consommation",
     erreurs: "https://quebecesim.ca/pages/jobtiens-un-message-derreur-lors-de-linstallation",
     contact: "https://quebecesim.ca/pages/contactez-nous",
