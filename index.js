@@ -112,7 +112,7 @@ function formatEsimEmailHtml({
     pixel: "https://quebecesim.ca/pages/installation-esim-google-pixel",
     ipad: "https://quebecesim.ca/pages/installation-esim-ipad",
     conso: "https://quebecesim.ca/pages/comment-suivre-ma-consommation",
-    erreurs: "https://quebecesim.ca/pages/un-message-derreur-saffiche",
+    erreurs: "https://quebecesim.ca/pages/jobtiens-un-message-derreur-lors-de-linstallation",
     contact: "https://quebecesim.ca/pages/contactez-nous",
   };
 
