@@ -400,7 +400,7 @@ export async function appendEsimToOrderEsimsJson(orderId, { iccid, uid } = {}) {
         ownerId: gid,
         namespace: "custom",
         key: ESIMS_JSON_KEY,
-        type: "json",
+        type: "multi_line_text_field",
         value: JSON.stringify(next),
       },
     ],
