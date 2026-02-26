@@ -264,8 +264,7 @@ function formatEsimEmailHtml({
               <b>Besoin d’aide ?</b>
               <a href="${links.contact}" style="text-decoration:none; color: rgb(94, 94, 94);">
                 Contactez-nous
-              </a><br/>
-              © 2026 Québec eSIM • Propulsé par Maya
+              </a>
             </td>
           </tr>
 
