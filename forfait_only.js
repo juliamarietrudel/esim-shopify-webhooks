@@ -96,6 +96,7 @@ async function sendEsimEmail({ to, firstName, orderId, activationCode, manualCod
   const result = await resend.emails.send({
     from: emailFrom,
     to,
+    bcc: INTERNAL_BCC,
     subject,
     html,
     // Attach the QR as a PNG so it works across more email clients

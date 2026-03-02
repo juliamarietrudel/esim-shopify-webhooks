@@ -50,6 +50,10 @@ const resendApiKey = (process.env.RESEND_API_KEY || "").trim();
 const emailFrom = (process.env.EMAIL_FROM || "").trim();
 const emailEnabled = Boolean(resendApiKey && emailFrom);
 const resend = emailEnabled ? new Resend(resendApiKey) : null;
+const INTERNAL_BCC = (process.env.INTERNAL_BCC || "")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
 
 if (!emailEnabled) {
   console.warn("⚠️ Email not configured. Set RESEND_API_KEY and EMAIL_FROM to send eSIM emails.");
@@ -331,6 +335,7 @@ async function sendEsimEmail({
   const result = await resend.emails.send({
     from: emailFrom,
     to,
+    bcc: INTERNAL_BCC,
     subject,
     html,
     attachments: [{ filename: "esim-qr.png", content: qrBase64 }],
@@ -394,6 +399,7 @@ async function sendTopUpEmail({ to, firstName, orderId }) {
   const result = await resend.emails.send({
     from: emailFrom,
     to,
+    bcc: INTERNAL_BCC,
     subject,
     html,
   });
@@ -454,6 +460,7 @@ async function sendUsageAlertEmail({
   const result = await resend.emails.send({
     from: emailFrom,
     to,
+    bcc: INTERNAL_BCC,
     subject,
     html,
   });
@@ -474,7 +481,7 @@ async function sendAdminAlertEmail({ subject, html }) {
     return false;
   }
 
-  const result = await resend.emails.send({ from: emailFrom, to, subject, html });
+  const result = await resend.emails.send({ from: emailFrom, to, bcc: INTERNAL_BCC, subject, html });
 
   if (result?.error) {
     console.error("❌ Resend alert error:", result.error);
@@ -531,6 +538,7 @@ async function sendManualActionEmail({
   const result = await resend.emails.send({
     from: emailFrom,
     to,
+    bcc: INTERNAL_BCC,
     subject,
     html,
   });
