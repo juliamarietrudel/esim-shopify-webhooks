@@ -29,12 +29,21 @@ import {
   createMayaEsim,
   getMayaCustomerDetails,
   createMayaTopUp,
-  getMayaEsimDetailsByIccid,
-  getMayaEsimPlansByIccid,
 } from "./services/maya.js";
 
 const app = express();
 console.log("BOOT MARKER: build-2026-02-15-01");
+
+// -----------------------------
+// Logging (reduce noise)
+// -----------------------------
+const LOG_LEVEL = String(process.env.LOG_LEVEL || "info").toLowerCase();
+const log = {
+  debug: (...a) => (LOG_LEVEL === "debug" ? console.log(...a) : undefined),
+  info: (...a) => (["debug", "info"].includes(LOG_LEVEL) ? console.log(...a) : undefined),
+  warn: (...a) => (["debug", "info", "warn"].includes(LOG_LEVEL) ? console.warn(...a) : undefined),
+  error: (...a) => console.error(...a),
+};
 
 // -----------------------------
 // Usage alert settings (CRON)
@@ -269,6 +278,9 @@ function formatEsimEmailHtml({
               <a href="${links.contact}" style="text-decoration:none; color: rgb(94, 94, 94);">
                 Contactez-nous
               </a>
+            </td>
+            <td style="padding: 18px 24px; background:#F8FAFC; border-top: 1px solid #E5E7EB; font-size: 12px; color:#64748B;">
+              <b>© 2026 Québec eSIM • Propulsé par Maya</b>
             </td>
           </tr>
 
@@ -612,70 +624,63 @@ app.get("/cron/check-usage", async (req, res) => {
     return res.status(401).send("Unauthorized");
   }
 
-  console.log("🕒 CRON check-usage triggered:", new Date().toISOString());
+  log.info("🕒 CRON check-usage triggered:", new Date().toISOString());
 
   try {
     const orders = await getOrdersWithEsims({ daysBack: 365 });
-    console.log("✅ Orders with eSIMs found:", orders.length);
+    log.info("✅ Orders with eSIMs found:", orders.length);
 
     for (const o of orders) {
       const { orderId, orderName, esims, mayaCustomerId } = o;
 
-      // Fetch email + name from Maya (not Shopify)
-      let email = "";
-      let firstName = "";
+    // Fetch email + name from Maya (not Shopify) AND build an eSIM index from the same payload
+    let email = "";
+    let firstName = "";
+    let mayaDetails = null;
+    let mayaEsimIndex = null;
 
-      if (mayaCustomerId) {
-        try {
-          const mayaDetails = await getMayaCustomerDetails(mayaCustomerId);
-          email = String(mayaDetails?.customer?.email || "").trim();
-          firstName = String(mayaDetails?.customer?.first_name || "").trim();
-        } catch (err) {
-          console.warn("⚠️ Failed to fetch Maya customer details for usage email:", {
-            orderId,
-            mayaCustomerId,
-            err: err?.message || err,
-          });
-        }
-      } else {
-        console.warn("⚠️ Order missing mayaCustomerId; cannot send usage alert email.", { orderId, orderName });
+    if (mayaCustomerId) {
+      try {
+        mayaDetails = await getMayaCustomerDetails(mayaCustomerId);
+        email = String(mayaDetails?.customer?.email || "").trim();
+        firstName = String(mayaDetails?.customer?.first_name || "").trim();
+        mayaEsimIndex = buildMayaEsimIndex(mayaDetails);
+      } catch (err) {
+        log.warn("⚠️ Failed to fetch Maya customer details for usage email:", {
+          orderId,
+          mayaCustomerId,
+          err: err?.message || err,
+        });
+      }
+    } else {
+      log.warn("⚠️ Order missing mayaCustomerId; cannot send usage alert email.", { orderId, orderName });
+    }
+
+      log.info(`\n🧾 Order ${orderId} — eSIMs found: ${esims.length}`);
+
+      if (!mayaEsimIndex) {
+        log.warn("⚠️ Skipping order (no Maya payload/index available).", { orderId, mayaCustomerId });
+        continue;
       }
 
-      console.log(`\n🧾 Order ${orderId} — eSIMs found: ${esims.length}`);
-
       for (const e of esims) {
-        const iccid = e.iccid;
+        const iccid = normalizeIccid(e?.iccid);
+        if (!iccid) continue;
 
-        console.log(`\n🔎 Checking usage for order ${orderId} — ICCID: ${iccid}`);
-        console.log("🔎 ABOUT TO FETCH ICCID:", iccid);
+        log.info(`🔎 Usage check — order ${orderId} — ICCID: ${iccid}`);
 
-        // (optional debug) Maya eSIM details call
-        let esim = null;
-        try {
-          esim = await getMayaEsimDetailsByIccid(iccid);
-        } catch (err) {
-          console.warn(`⚠️ Maya lookup failed for ICCID ${iccid}:`, err?.message || err);
-          continue;
-        }
-        if (!esim) {
-          console.warn(`⚠️ No eSIM found in Maya for ICCID ${iccid}`);
+        const mayaEsim = mayaEsimIndex.get(iccid);
+        if (!mayaEsim) {
+          log.warn("⚠️ ICCID not found in Maya customer payload (skipping)", { orderId, iccid, mayaCustomerId });
           continue;
         }
 
-        let plans = [];
-        try {
-          plans = await getMayaEsimPlansByIccid(iccid);
-        } catch (err) {
-          console.warn(`⚠️ Maya plans lookup failed for ICCID ${iccid}:`, err?.message || err);
-          continue;
-        }
-
-        console.log("📦 Plans found:", plans.length);
+        const plans = Array.isArray(mayaEsim?.plans) ? mayaEsim.plans : [];
+        log.debug("📦 Plans found (from customer payload):", plans.length);
 
         const activePlan = pickCurrentPlan(plans);
-
         if (!activePlan) {
-          console.warn(`⚠️ No plans attached to ICCID ${iccid}`);
+          log.warn("⚠️ No usable plan found for ICCID (skipping)", { orderId, iccid });
           continue;
         }
 
@@ -687,7 +692,7 @@ app.get("/cron/check-usage", async (req, res) => {
         const isNetActive = netRaw === "ACTIVE" || netRaw === "ENABLED";
 
         if (!isActivated || !isNetActive) {
-          console.log("ℹ️ Skipping usage alert (plan not active)", {
+          log.debug("ℹ️ Skipping usage alert (plan not active)", {
             iccid,
             planId: activePlan?.id,
             date_activated: activatedRaw,
@@ -696,29 +701,19 @@ app.get("/cron/check-usage", async (req, res) => {
           continue;
         }
 
-        const totalBytes = Number(activePlan.data_quota_bytes || 0);
-        const remainingBytes = Number(activePlan.data_bytes_remaining || 0);
+        const totalBytes = Number(activePlan?.data_quota_bytes || 0);
+        const remainingBytes = Number(activePlan?.data_bytes_remaining || 0);
 
         if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
-          console.warn(`⚠️ Invalid data quota for ICCID ${iccid}`);
+          log.warn("⚠️ Invalid data quota for ICCID", { orderId, iccid, totalBytes });
           continue;
         }
 
         const usedBytes = totalBytes - remainingBytes;
         const percentUsed = Math.round((usedBytes / totalBytes) * 100);
 
-        console.log({
-          orderId,
-          iccid,
-          activePlanId: activePlan.id,
-          totalBytes,
-          remainingBytes,
-          percentUsed: `${percentUsed}%`,
-          activated: activePlan.date_activated,
-          net: activePlan.network_status,
-          start: activePlan.start_time,
-          end: activePlan.end_time,
-        });
+        // Important summary log only
+        log.info("📊 Usage", { orderId, iccid, planId: activePlan?.id, percentUsed });
 
         const threshold = Number.isFinite(USAGE_ALERT_THRESHOLD_PERCENT)
           ? USAGE_ALERT_THRESHOLD_PERCENT
@@ -731,14 +726,16 @@ app.get("/cron/check-usage", async (req, res) => {
           try {
             flag = await getUsageAlertFlag(orderId, key);
           } catch (err) {
-            console.error("❌ Could not read usage alert flag:", err?.message || err);
+            log.error("❌ Could not read usage alert flag:", err?.message || err);
           }
 
           if (flag.sent) {
-            console.log(`ℹ️ Usage alert already sent for ${orderId}:${key}, skipping.`);
+            log.info(`ℹ️ Usage alert already sent for ${orderId}:${key}, skipping.`);
           } else {
             if (!email) {
-              console.warn(`⚠️ Usage alert triggered (${percentUsed}%) but no customer email could be resolved (mayaCustomerId=${mayaCustomerId || "none"}). Order ${orderId}`);
+              log.warn(
+                `⚠️ Usage alert triggered (${percentUsed}%) but no customer email could be resolved (mayaCustomerId=${mayaCustomerId || "none"}). Order ${orderId}`
+              );
             } else {
               try {
                 await sendUsageAlertEmail({
@@ -752,9 +749,9 @@ app.get("/cron/check-usage", async (req, res) => {
                 });
 
                 await markUsageAlertSent(orderId, key);
-                console.log(`✅ Marked usage alert as sent on Shopify for ${orderId}:${key}`);
+                log.info(`✅ Marked usage alert as sent on Shopify for ${orderId}:${key}`);
               } catch (err) {
-                console.error("❌ Failed to send/mark usage alert email:", err?.message || err);
+                log.error("❌ Failed to send/mark usage alert email:", err?.message || err);
               }
             }
           }
@@ -774,6 +771,30 @@ app.get("/cron/check-usage", async (req, res) => {
 // -----------------------------
 function normId(x) {
   return String(x || "").trim().toLowerCase();
+}
+
+function normalizeIccid(x) {
+  return String(x || "").replace(/\s+/g, "").trim();
+}
+
+function buildMayaEsimIndex(mayaDetails) {
+  const esims = Array.isArray(mayaDetails?.customer?.esims) ? mayaDetails.customer.esims : [];
+  const byIccid = new Map();
+
+  for (const e of esims) {
+    const iccid = normalizeIccid(e?.iccid);
+    if (!iccid) continue;
+
+    byIccid.set(iccid, {
+      iccid,
+      uid: e?.uid || null,
+      state: e?.state || null,
+      service_status: e?.service_status || null,
+      plans: Array.isArray(e?.plans) ? e.plans : [],
+    });
+  }
+
+  return byIccid;
 }
 
 function pickBuyerFromOrder(order) {
@@ -866,11 +887,11 @@ function verifyShopifyWebhook(req) {
     .digest("base64");
 
   // safe debug (doesn't expose the secret)
-  console.log("HMAC header length:", hmacHeader.length);
-  console.log("Computed HMAC length:", computed.length);
-  console.log("Header starts:", hmacHeader.slice(0, 10));
-  console.log("Computed starts:", computed.slice(0, 10));
-  console.log("SECRET length:", secret.length);
+  log.debug("HMAC header length:", hmacHeader.length);
+  log.debug("Computed HMAC length:", computed.length);
+  log.debug("Header starts:", hmacHeader.slice(0, 10));
+  log.debug("Computed starts:", computed.slice(0, 10));
+  log.debug("SECRET length:", secret.length);
 
   try {
     return crypto.timingSafeEqual(
@@ -888,8 +909,8 @@ async function handleOrderPaidWebhook(order, reqForHeaders = null) {
 
   const { email, firstName, lastName, countryIso2 } = pickBuyerFromOrder(order);
 
-  console.log("Order ID:", orderId);
-  console.log("Buyer:", { email, firstName, lastName, countryIso2 });
+  log.info("Order ID:", orderId);
+  log.info("Buyer:", { email, firstName, lastName, countryIso2 });
 
   if (!orderId) {
     console.warn("⚠️ No order id in payload, exiting.");
