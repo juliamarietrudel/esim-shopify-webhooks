@@ -448,26 +448,124 @@ async function sendUsageAlertEmail({
     ? `Data usage alert (Order #${orderId})`
     : "Data usage alert";
 
-  const html = `
-    <div style="margin:0; padding:0; background:#F6FAFD; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial; color:#0F172A;">
-      <div style="max-width:640px; margin:0 auto; padding:24px;">
-        <div style="background:#FFFFFF; border:1px solid #E5E7EB; border-radius:16px; padding:22px;">
-          <h2 style="margin:0 0 12px; font-size:18px;">Hi ${esc(safeName)} 👋</h2>
-          <p style="margin:0 0 12px; font-size:14px; color:#334155;">
-            You’ve used more than <b>${thresholdPercent}%</b> of your data.
-          </p>
-          <p style="margin:0 0 12px; font-size:14px; color:#334155;">
-            Current usage: <b>${percentUsed}%</b>
-          </p>
-          ${iccid ? `<p style="margin:0 0 6px; font-size:12px; color:#64748B;"><b>ICCID</b>: ${esc(iccid)}</p>` : ""}
-          ${planId ? `<p style="margin:0 0 6px; font-size:12px; color:#64748B;"><b>Plan ID</b>: ${esc(planId)}</p>` : ""}
-          <p style="margin:14px 0 0; font-size:12px; color:#64748B;">
-            Need more data? You can purchase a top-up anytime.
-          </p>
-        </div>
-      </div>
-    </div>
-  `;
+  const html = `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Alerte de consommation de données</title>
+</head>
+
+<body style="margin:0; padding:0; background:#F6FAFD; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="padding: 32px 0;">
+    <tr>
+      <td align="center">
+
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"
+          style="width:100%; max-width:800px; background:#FFFFFF; border-radius:18px; box-shadow:0 10px 30px rgba(15,23,42,0.08); overflow:hidden;">
+
+          <tr>
+            <td style="padding:20px 24px; border-bottom:1px solid #E5E7EB;">
+              <table width="100%">
+                <tr>
+                  <td>
+                    <img 
+                      src="https://quebecesim.ca/cdn/shop/files/1000008019.png?v=1737480349&width=600"
+                      alt="Québec eSIM"
+                      width="80"
+                      style="display:block; max-width:140px; height:auto;"
+                    />
+                  </td>
+                  <td align="right">
+                    <span style="display:inline-block; padding:8px 12px; border-radius:999px; background:#0CA3EC; color:#FFFFFF; font-weight:600; font-size:12px;">
+                      Alerte données
+                    </span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:28px 24px;">
+
+              <h1 style="margin:0 0 16px; font-size:22px; color:#0F172A;">
+                Alerte de consommation
+              </h1>
+
+              <p style="font-size:15px; color:#334155; margin:0 0 14px;">
+                Bonjour <b>${esc(safeName)}</b>,
+              </p>
+
+              <p style="font-size:15px; color:#334155; margin:0 0 18px;">
+                Vous avez utilisé plus de <b>${thresholdPercent}%</b> de votre forfait de données.
+              </p>
+
+              <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                style="background:#FFFFFF; border:1px solid #E5E7EB; border-radius:14px; padding:18px; margin-bottom:22px;">
+
+                <tr>
+                  <td style="padding:6px 0; font-size:14px; color:#475569;">
+                    <b>Utilisation actuelle</b>
+                  </td>
+                  <td align="right" style="font-size:14px; color:#0F172A;">
+                    ${percentUsed}%
+                  </td>
+                </tr>
+
+                ${iccid ? `
+                <tr>
+                  <td style="padding:6px 0; font-size:14px; color:#475569;">
+                    <b>ICCID</b>
+                  </td>
+                  <td align="right" style="font-size:14px; color:#0F172A;">
+                    ${esc(iccid)}
+                  </td>
+                </tr>` : ""}
+
+                ${planId ? `
+                <tr>
+                  <td style="padding:6px 0; font-size:14px; color:#475569;">
+                    <b>ID du forfait</b>
+                  </td>
+                  <td align="right" style="font-size:14px; color:#0F172A;">
+                    ${esc(planId)}
+                  </td>
+                </tr>` : ""}
+
+              </table>
+
+              <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                style="background:#F8FAFC; border:1px solid #E5E7EB; border-radius:14px; padding:18px; margin-bottom:22px;">
+                <tr>
+                  <td style="font-size:13px; color:#475569; line-height:1.45;">
+                    Si vous prévoyez utiliser davantage de données, vous pouvez acheter une recharge à tout moment afin d’éviter toute interruption de service.
+                  </td>
+                </tr>
+              </table>
+
+              <p style="font-size:14px; color:#334155; margin:0;">
+                Merci d’utiliser <b>Québec eSIM</b>.
+              </p>
+
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:18px 24px; background:#F8FAFC; border-top:1px solid #E5E7EB; font-size:12px; color:#64748B;">
+              <b>Besoin d’aide ?</b>
+              <a href="https://quebecesim.ca/pages/contact" style="text-decoration:none; color:rgb(94,94,94);">
+                Contactez-nous
+              </a>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
 
   const result = await resend.emails.send({
     from: emailFrom,
