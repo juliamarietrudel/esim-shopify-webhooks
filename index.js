@@ -290,7 +290,7 @@ function formatEsimEmailHtml({
     </tr>
   </table>
 </body>
-</html>`;
+  </html>`;
 }
 
 async function sendEsimEmail({
@@ -366,31 +366,120 @@ async function sendEsimEmail({
 function formatTopUpEmailHtml({ firstName }) {
   const safeName = (firstName || "").trim() || "client(e)";
 
-  return `
-    <div style="margin:0; padding:0; background:#F6FAFD; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial; color:#0F172A;">
-      <div style="max-width:640px; margin:0 auto; padding:24px;">
-        <div style="background:#FFFFFF; border:1px solid #E5E7EB; border-radius:16px; padding:22px;">
-          <h2 style="margin:0 0 12px; font-size:18px;">Bonjour ${esc(safeName)} 👋</h2>
+  const bullet = (text) =>
+    `<li style="margin:10px 0; line-height:1.45; color:#334155; font-size:14px;">${text}</li>`;
 
-          <p style="margin:0 0 12px; font-size:14px; color:#334155;">
-            Nous vous confirmons que votre <b>Recharge eSIM</b> a bien été appliquée à votre forfait actuel.
-          </p>
+  const links = {
+    contact: "https://quebecesim.ca/pages/contactez-nous",
+  };
 
-          <p style="margin:0 0 12px; font-size:14px; color:#334155;">
-            Celle-ci s’activera automatiquement à l’expiration du forfait de départ.
-          </p>
+  return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Recharge eSIM appliquée</title>
+</head>
 
-          <p style="margin:14px 0 0; font-size:14px; color:#334155;">
-            Nous vous souhaitons une excellente fin de séjour !
-          </p>
+<body style="margin:0; padding:0; background:#F6FAFD; font-family:-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Arial;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="padding: 32px 0;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"
+          style="width:100%; max-width:800px; background:#FFFFFF; border-radius:18px; box-shadow:0 10px 30px rgba(15,23,42,0.08); overflow:hidden;">
 
-          <p style="margin:14px 0 0; font-size:12px; color:#64748B;">
-            Merci,<br/>Québec eSIM
-          </p>
-        </div>
-      </div>
-    </div>
-  `;
+          <tr>
+            <td style="padding: 20px 24px; border-bottom: 1px solid #E5E7EB;">
+              <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td>
+                    <img 
+                      src="https://quebecesim.ca/cdn/shop/files/1000008019.png?v=1737480349&width=600"
+                      alt="Québec eSIM"
+                      width="80"
+                      style="display:block; max-width:140px; height:auto;"
+                    />
+                  </td>
+                  <td align="right">
+                    <span style="display:inline-block; padding:8px 12px; border-radius:999px; background:#0CA3EC; color:#FFFFFF; font-weight:600; font-size:12px;">
+                      Recharge eSIM
+                    </span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding: 28px 24px;">
+
+              <h1 style="margin: 0 0 16px; font-size: 22px; color:#0F172A;">
+                Recharge appliquée ✅
+              </h1>
+
+              <p style="font-size: 15px; color:#334155; margin: 0 0 14px;">
+                Bonjour <b>${esc(safeName)}</b>,
+              </p>
+
+              <p style="font-size: 15px; color:#334155; margin: 0 0 18px;">
+                Nous vous confirmons que votre <b>recharge eSIM</b> a bien été appliquée à votre forfait actuel.
+              </p>
+
+              <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                style="background:#FFFFFF; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px; margin-bottom: 18px;">
+                <tr>
+                  <td style="padding:10px 0; font-size:14px; color:#334155;">
+                    <b>Activation :</b> la recharge s’activera automatiquement à l’expiration de votre forfait en cours.
+                  </td>
+                </tr>
+              </table>
+
+              <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                style="background:#F8FAFC; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px; margin: 12px 0 22px;">
+                <tr>
+                  <td style="font-size: 13px; color:#475569; line-height:1.45;">
+                    <b>Important :</b> Ne supprimez jamais votre eSIM. En cas de souci, contactez-nous et nous vous aiderons rapidement.
+                  </td>
+                </tr>
+              </table>
+
+              <h2 style="font-size: 16px; color:#0F172A; margin: 0 0 10px;">Rappel rapide</h2>
+              <ul style="margin:0 0 18px 18px; padding:0;">
+                ${bullet("Assurez-vous que l’itinérance des données est <b>ACTIVÉE</b> pour votre eSIM.")}
+                ${bullet("Vérifiez que votre mode avion est <b>DÉSACTIVÉ</b>.")}
+              </ul>
+
+              <p style="font-size: 14px; color:#334155; margin: 18px 0 0;">
+                Nous vous souhaitons une excellente fin de séjour !
+              </p>
+
+              <p style="font-size: 14px; color:#334155; margin: 6px 0 0;">
+                Cordialement,
+              </p>
+
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding: 18px 24px; background:#F8FAFC; border-top: 1px solid #E5E7EB; font-size: 12px; color:#64748B;">
+              <b>Besoin d’aide ?</b>
+              <a href="${links.contact}" style="text-decoration:none; color: rgb(94, 94, 94);">
+                Contactez-nous
+              </a>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding: 18px 24px; background:#F8FAFC; border-top: 1px solid #E5E7EB; font-size: 12px; color:#64748B;">
+              <b>© 2026 Québec eSIM • Propulsé par Maya</b>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
 }
 
 async function sendTopUpEmail({ to, firstName, orderId }) {
@@ -554,7 +643,7 @@ async function sendUsageAlertEmail({
           <tr>
             <td style="padding:18px 24px; background:#F8FAFC; border-top:1px solid #E5E7EB; font-size:12px; color:#64748B;">
               <b>Besoin d’aide ?</b>
-              <a href="https://quebecesim.ca/pages/contact" style="text-decoration:none; color:rgb(94,94,94);">
+              <a href="https://quebecesim.ca/pages/contactez-nous" style="text-decoration:none; color:rgb(94,94,94);">
                 Contactez-nous
               </a>
             </td>
