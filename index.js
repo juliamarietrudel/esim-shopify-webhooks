@@ -279,11 +279,12 @@ function formatEsimEmailHtml({
                 Contactez-nous
               </a>
             </td>
+          </tr>
+          <tr>
             <td style="padding: 18px 24px; background:#F8FAFC; border-top: 1px solid #E5E7EB; font-size: 12px; color:#64748B;">
               <b>© 2026 Québec eSIM • Propulsé par Maya</b>
             </td>
           </tr>
-
         </table>
       </td>
     </tr>
@@ -556,6 +557,11 @@ async function sendUsageAlertEmail({
               <a href="https://quebecesim.ca/pages/contact" style="text-decoration:none; color:rgb(94,94,94);">
                 Contactez-nous
               </a>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 18px 24px; background:#F8FAFC; border-top: 1px solid #E5E7EB; font-size: 12px; color:#64748B;">
+              <b>© 2026 Québec eSIM • Propulsé par Maya</b>
             </td>
           </tr>
 
