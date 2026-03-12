@@ -7,9 +7,9 @@ use connectivity rather than partners urls
 <!-- REQUEST WITH AUTHENTICATION -->
 <!-- get all products -->
 curl --request GET \
-  --url 'https://api.maya.net/connectivity/v1/account/products' \
+  --url 'https://api.maya.net/connectivity/v1/account/products?region=europe&country=us' \
   --header 'Accept: application/json' \
-  --header 'Authorization: Basic <BASIC_AUTH_BASE64>'
+  --header 'Authorization: Basic YjY4RWdDQjJLOVc5OmdscVBYcWVWcFk2bUVZTWZvMXJhSHlBR2JsdHhoT1N5TjdmdFJpNXc2UUxBRE1oc2NrM25IWFdydUpCdldLODM='
 
 <!-- get customer info (for customer with id: ZMPSHYKZEEUF) -->
 curl --request GET \
